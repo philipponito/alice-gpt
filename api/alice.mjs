@@ -1,5 +1,6 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { handleGoogle, userError } from "../lib/google-jobs.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -147,6 +148,20 @@ export default async function handler(req, res) {
   const factsKey = `alice:v1:${hash}:facts`;
 
   try {
+    // Explicit memory requests retain the original path, even if they mention Google.
+    if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|исправь|очисти|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
+      try {
+        const google = await handleGoogle({ owner: hash, personId, command, question, body });
+        if (google) {
+          const reply = aliceReply(google.text);
+          if (google.buttons) reply.response.buttons = google.buttons;
+          return res.status(200).json(reply);
+        }
+      } catch (error) {
+        return send(userError(error));
+      }
+    }
+
     // Полная очистка памяти.
     if ([
       "очисти память",
@@ -441,7 +456,7 @@ ${memoryText}
     return send(answer || "Готово.");
 
   } catch (error) {
-    console.error("Alice GPT:", error.message);
+    console.error("Alice GPT: request_failed");
 
     const timeout =
       error.name === "TimeoutError" ||

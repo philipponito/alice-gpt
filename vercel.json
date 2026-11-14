@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/alice.mjs": { "maxDuration": 60 },
+    "api/google/*.mjs": { "maxDuration": 30 }
+  }
+}
