@@ -6,11 +6,11 @@ import { createHash } from 'node:crypto';
 Object.assign(process.env, {
   KV_REST_API_URL: 'https://redis.example.test', KV_REST_API_TOKEN: 'fake-redis',
   ALICE_WEBHOOK_SECRET: 'test-only-webhook-secret-00000000000000000000', OPENAI_API_KEY: 'fake-openai',
-  GOOGLE_CLIENT_ID: 'fake-client', GOOGLE_CLIENT_SECRET: 'fake-client-secret',
+  GOOGLE_CLIENT_ID: '123456-testclient.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'fake-client-secret',
   GOOGLE_REDIRECT_URI: 'https://alice.example.test/api/google/callback'
 });
 const { seal, unseal, digest, redis, getPrivate, putPrivate, tokenKey } = await import('../lib/store.mjs');
-const { pairing, begin, finish, accessToken, SCOPES } = await import('../lib/google-oauth.mjs');
+const { pairing, begin, finish, accessToken, SCOPES, config } = await import('../lib/google-oauth.mjs');
 const { executeTool, docText, messageText } = await import('../lib/google-tools.mjs');
 const { runAgent, startJob, pollJob } = await import('../lib/google-jobs.mjs');
 const { default: alice } = await import('../api/alice.mjs');
@@ -85,6 +85,13 @@ test('private data is authenticated, encrypted and bound to its user/key', () =>
   assert.throws(() => unseal(value, 'owner-b'));
   const segments = value.split('.'); segments[1] = Buffer.alloc(16).toString('base64url');
   assert.throws(() => unseal(segments.join('.'), 'owner-a'));
+});
+test('a misplaced client secret cannot be included in the Google authorization URL', () => {
+  const previous = process.env.GOOGLE_CLIENT_ID;
+  try {
+    process.env.GOOGLE_CLIENT_ID = 'GOCSPX-test-only-not-a-real-secret';
+    assert.throws(() => config(), /google_not_configured/);
+  } finally { process.env.GOOGLE_CLIENT_ID = previous; }
 });
 test('webhook rejects missing/wrong secrets, exit remains immediate with no external requests', async () => {
   for (const url of ['/api/alice', '/api/alice?key=wrong']) {
