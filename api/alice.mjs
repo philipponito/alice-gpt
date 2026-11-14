@@ -1,5 +1,5 @@
 
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -63,6 +63,35 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
   }
+  
+  // Проверка секретного ключа webhook
+  const expectedKey = process.env.ALICE_WEBHOOK_SECRET;
+
+  if (!expectedKey) {
+    console.error("ALICE_WEBHOOK_SECRET is missing");
+    return res.status(503).json({
+      error: "Webhook is not configured"
+    });
+  }
+
+  const providedKey = new URL(
+    req.url,
+    "https://localhost"
+  ).searchParams.get("key") || "";
+
+  const expectedBuffer = Buffer.from(expectedKey);
+  const providedBuffer = Buffer.from(providedKey);
+
+  const authorized =
+    expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer);
+
+  if (!authorized) {
+    return res.status(403).json({
+      error: "Forbidden"
+    });
+  }
+
 
   const started = Date.now();
   const body = req.body || {};
