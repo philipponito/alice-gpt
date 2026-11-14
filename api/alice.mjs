@@ -25,6 +25,37 @@ export default async function handler(req, res) {
     });
   }
 
+  
+const command = (body.request?.command || question)
+  .toLowerCase()
+  .replace(/[«»"“”.,!?]+/g, "")
+  .trim();
+
+const exitCommands = [
+  "хватит",
+  "алиса хватит",
+  "стоп",
+  "выход",
+  "выйти",
+  "выйти из навыка",
+  "закончить",
+  "закрой навык",
+  "заверши разговор",
+  "пока",
+  "алиса вернись"
+];
+
+if (exitCommands.includes(command)) {
+  return res.status(200).json({
+    version: "1.0",
+    response: {
+      text: "Хорошо, до встречи!",
+      end_session: true
+    },
+    session_state: {}
+  });
+}
+
   if (!question) {
     return reply("Привет! Я GPT. О чём поговорим?");
   }
