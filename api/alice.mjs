@@ -10,20 +10,32 @@ export default async function handler(req, res) {
 
   const body = req.body || {};
   const question = body.request?.original_utterance?.trim() || "";
-  const previousId = body.state?.session?.last_response_id;
+  const previousId =
+  body.state?.session?.last_response_id ||
+  body.state?.user?.last_response_id;
 
-  function reply(text, responseId = previousId) {
-    return res.status(200).json({
-      version: "1.0",
-      response: {
-        text: text.slice(0, 1000),
-        end_session: false
-      },
-      session_state: responseId
-        ? { last_response_id: responseId }
-        : {}
-    });
+  
+function reply(text, responseId = previousId) {
+  const result = {
+    version: "1.0",
+    response: {
+      text: text.slice(0, 1000),
+      end_session: false
+    },
+    session_state: responseId
+      ? { last_response_id: responseId }
+      : {}
+  };
+
+  if (body.session?.user?.user_id && responseId) {
+    result.user_state_update = {
+      last_response_id: responseId
+    };
   }
+
+  return res.status(200).json(result);
+}
+
 
   
 const command = (body.request?.command || question)
