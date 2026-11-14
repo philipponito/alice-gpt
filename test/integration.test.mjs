@@ -114,6 +114,8 @@ test('application identity alone cannot connect or read Google', async () => {
 test('connection page has no secrets or inline scripts and only readonly scopes', async () => {
   const r = res(); await connect({ method:'GET' },r);
   assert.equal(r.statusCode,200); assert.ok(r.headers['Cache-Control'].includes('no-store'));
+  assert.equal(r.headers['Referrer-Policy'],'same-origin');
+  assert.ok(r.headers['Content-Security-Policy'].includes("form-action 'self' https://accounts.google.com;"));
   assert.match(r.headers['Set-Cookie'], /HttpOnly; Secure; SameSite=Lax/);
   assert.ok(!r.body.includes(process.env.ALICE_WEBHOOK_SECRET)); assert.ok(!r.body.includes('<script'));
   assert.ok(Object.values(SCOPES).flat().every(s => s.endsWith('readonly')));

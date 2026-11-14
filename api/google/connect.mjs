@@ -3,6 +3,10 @@ import { begin, config, secureHeaders, setCookie } from '../../lib/google-oauth.
 
 export default async function handler(req, res) {
   secureHeaders(res);
+  // Basic form POSTs under no-referrer send Origin:null in browsers. Keep the
+  // same-origin origin check usable, while withholding referrers from Google.
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'");
   try {
     config();
     if (req.method === 'POST') {
