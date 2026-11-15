@@ -13,6 +13,7 @@ const { seal, unseal, digest, redis, getPrivate, putPrivate, tokenKey } = await 
 const { pairing, begin, finish, accessToken, SCOPES, config } = await import('../lib/google-oauth.mjs');
 const { executeTool, docText, messageText } = await import('../lib/google-tools.mjs');
 const { runAgent, startJob, pollJob } = await import('../lib/google-jobs.mjs');
+const { searchWeb, runWebAgent } = await import('../lib/web-search.mjs');
 const { executeCalendarAction } = await import('../lib/calendar-actions.mjs');
 const { default: alice } = await import('../api/alice.mjs');
 const { default: connect } = await import('../api/google/connect.mjs');
@@ -54,7 +55,7 @@ function cmd(c) {
       cmd(['SET',keys[0],'1','EX',600]); cmd(['SET',keys[1],args[0],'EX',300]); return 1;
     }
     if (script.includes('local prev=')) {
-      if (!db.has(keys[4])) return null;
+      if (args[2] !== 'web' && !db.has(keys[4])) return null;
       const prev = cmd(['GET', keys[0]]) || cmd(['GET', keys[1]]);
       if (prev) return prev;
       cmd(['SET',keys[0],args[0],'EX',600]);cmd(['SET',keys[1],args[0],'EX',55]);
@@ -85,6 +86,7 @@ async function tokens(who = owner, overrides = {}) {
 }
 beforeEach(() => {
   db = new Map(); expiry = new Map(); calls = []; background = []; redisDelay = 0;
+  delete process.env.ALICE_GPT_SEARCH;
   globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => background.push(p) }) };
   provider = () => { throw new Error('Unexpected external request'); };
   globalThis.fetch = async (url, options = {}) => {
@@ -504,4 +506,63 @@ test('a fast answer is returned through Alice and is not also sent to the bridge
   await nextVoice(owner);
   assert.equal(await startJob(owner,'Мои дела','fast-request','session'),'Быстрый ответ.');
   assert.equal(await nextVoice(owner),null);
+});
+
+test('Serper key stays in a fixed provider header; results are bounded and never fetched', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  provider=(url,opts)=>{
+    assert.equal(url,'https://google.serper.dev/search');
+    assert.equal(opts.headers['X-API-KEY'],'fake-serper');
+    assert.equal(opts.redirect,'error');
+    assert.equal(JSON.parse(opts.body).num,5);
+    return response({organic:[{title:'Example',link:'https://example.com/news',snippet:'x'.repeat(2000)},{link:'javascript:alert(1)'},{link:'https://user:password@example.com'}]});
+  };
+  const found=await searchWeb({query:'новости'});
+  assert.equal(found.results.length,1);
+  assert.equal(found.results[0].snippet.length,1100);
+  assert.equal(found.snippetsOnly,true);
+  await assert.rejects(searchWeb({query:'x',url:'https://evil.example'}),/search_arguments/);
+});
+
+test('public search runs without Google tokens and cannot receive the private Google context', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  await putPrivate(`alice:google:context:${owner}`,[{role:'assistant',content:'PRIVATE_MAIL_CONTENT'}],300);
+  let turns=0;
+  provider=(url,opts)=>{
+    if(url==='https://google.serper.dev/search') return response({organic:[{title:'Example',link:'https://example.com',snippet:'Public news'}]});
+    assert.equal(url,'https://api.openai.com/v1/responses');
+    assert.ok(!opts.body.includes('fake-serper'));
+    assert.ok(!opts.body.includes('PRIVATE_MAIL_CONTENT'));
+    const body=JSON.parse(opts.body);
+    assert.deepEqual(body.tools.map(x=>x.name),['web_search']);
+    return ++turns===1 ? response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"новости"}',call_id:'search-1'}]}) : response({output:[{content:[{type:'output_text',text:'Новости по данным Example.'}]}]});
+  };
+  assert.equal(await startJob(owner,'Найди новости','web-only','session',Date.now(),'web'),'Новости по данным Example.');
+  assert.equal(turns,2);
+  assert.ok(!calls.some(c=>c.url.includes('googleapis.com')));
+});
+
+test('search provider errors are actionable and never expose raw provider descriptions', async () => {
+  await assert.rejects(searchWeb({query:'x'}),/search_not_configured/);
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  provider=()=>response({message:'private-provider-detail'},403);
+  await assert.rejects(searchWeb({query:'x'}),/search_auth/);
+  provider=()=>response({},429);
+  await assert.rejects(searchWeb({query:'x'}),/search_limit/);
+});
+
+test('ordinary intent router can select web search without a Google connection', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper'; let modelCalls=0;
+  provider=(url,opts)=>{
+    if(url==='https://google.serper.dev/search') return response({organic:[]});
+    const body=JSON.parse(opts.body);
+    if(body.text) {
+      assert.ok(body.instructions.includes('настроен и доступен'));
+      return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply:'',changes:[],google_route:false,web_route:true})}]}]});
+    }
+    return ++modelCalls===1 ? response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"сегодняшние новости"}',call_id:'s'}]}) : response({output:[{content:[{type:'output_text',text:'Ничего не найдено.'}]}]});
+  };
+  const r=res(); await alice(request('Поищи свежие новости'),r);
+  assert.equal(r.body.response.text,'Ничего не найдено.');
+  assert.equal(modelCalls,2);
 });
