@@ -597,6 +597,40 @@ test('public search runs without Google tokens and cannot receive the private Go
   assert.ok(!calls.some(c=>c.url.includes('googleapis.com')));
 });
 
+test('repeated search reaches a final answer at the budget instead of aborting', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  let searches=0, modelCalls=0;
+  provider=(url,opts)=>{
+    if(url==='https://google.serper.dev/search') {
+      searches++;
+      return response({organic:[{title:`Источник ${searches}`,link:`https://example.com/${searches}`,snippet:`Факт ${searches}`} ]});
+    }
+    const body=JSON.parse(opts.body); modelCalls++;
+    if(modelCalls<=2) {
+      assert.notEqual(body.tool_choice,'none');
+      return response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"новости космонавтики"}',call_id:`s${modelCalls}`}]});
+    }
+    assert.equal(body.tool_choice,'none');
+    assert.ok(body.instructions.includes('дай итоговый ответ'));
+    assert.equal(body.input.filter(x=>x.type==='function_call_output').length,2);
+    return response({output:[{content:[{type:'output_text',text:'Новости по двум найденным источникам.'}]}]});
+  };
+  const result=await runWebAgent('Новости космонавтики',AbortSignal.timeout(1000));
+  assert.equal(result.answer,'Новости по двум найденным источникам.');
+  assert.equal(searches,2);
+  assert.equal(modelCalls,3);
+});
+
+test('model cannot execute another search after the server disables tools', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  let searches=0;
+  provider=(url)=>url==='https://google.serper.dev/search'
+    ? (searches++,response({organic:[]}))
+    : response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"x"}',call_id:`s${searches}`}]});
+  await assert.rejects(runWebAgent('новости',AbortSignal.timeout(1000)),/search_tool_limit/);
+  assert.equal(searches,2);
+});
+
 test('search provider errors are actionable and never expose raw provider descriptions', async () => {
   await assert.rejects(searchWeb({query:'x'}),/search_not_configured/);
   process.env.ALICE_GPT_SEARCH='fake-serper';
