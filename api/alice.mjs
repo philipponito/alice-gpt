@@ -13,10 +13,15 @@ const MAX_HISTORY = 12;
 const MAX_FACTS = 20;
 
 function aliceReply(text, endSession = false) {
+  const pending = !endSession && {
+    'Проверяю Google. Озвучу ответ, когда он будет готов.': 'Проверяю Google.',
+    'Ищу в интернете. Озвучу ответ, когда он будет готов.': 'Ищу в интернете.'
+  }[String(text)];
   return {
     version: "1.0",
     response: {
-      text: String(text).slice(0, 1000),
+      text: pending || String(text).slice(0, 1000),
+      ...(pending ? { tts: '<speaker audio="alice-sounds-game-ping-1.opus">' } : {}),
       end_session: endSession
     },
     session_state: {}
