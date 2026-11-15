@@ -125,6 +125,12 @@ test('email synonyms are routed to Google rather than ordinary GPT', async () =>
     assert.match(r.body.response.text, /Google ещё не подключён/);
   }
 });
+test('questions about tasks and plans reach Google Calendar routing', async () => {
+  for (const question of ['какие на завтра задачи?', 'какие планы на завтра?']) {
+    const r = res(); await alice(request(question), r);
+    assert.match(r.body.response.text, /Google ещё не подключён/);
+  }
+});
 test('connection page has no secrets or inline scripts and separates reminder permission', async () => {
   const r = res(); await connect({ method:'GET' },r);
   assert.equal(r.statusCode,200); assert.ok(r.headers['Cache-Control'].includes('no-store'));
