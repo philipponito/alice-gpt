@@ -119,7 +119,9 @@ export default async function handler(req, res) {
   }
 
   if (!question) {
-    return send("Привет! Я GPT. О чём поговорим?");
+    const greeting = aliceReply("Слушаю.");
+    greeting.response.tts = '<speaker audio="alice-sounds-game-ping-1.opus">';
+    return res.status(200).json(greeting);
   }
 
   if (!REDIS_URL || !REDIS_TOKEN ||
