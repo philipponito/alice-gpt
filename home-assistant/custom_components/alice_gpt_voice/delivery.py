@@ -2,6 +2,24 @@
 import re
 
 
+class SpeechProgress:
+    """Require observed speech completion; never guess from a fixed delay."""
+    def __init__(self):
+        self.started = False
+        self.result = None
+
+    def feed(self, state):
+        if self.result is not None:
+            return self.result
+        if state == "SPEAKING":
+            self.started = True
+        elif state == "IDLE" and self.started:
+            self.result = "done"
+        elif state not in ("IDLE", "SPEAKING"):
+            self.result = "cancelled"
+        return self.result
+
+
 def speech(data):
     if not isinstance(data, dict):
         return None

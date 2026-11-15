@@ -9,6 +9,20 @@ spec.loader.exec_module(delivery)
 
 
 class SpeechTest(unittest.TestCase):
+    def test_return_requires_actual_speech_completion(self):
+        progress = delivery.SpeechProgress()
+        self.assertIsNone(progress.feed("IDLE"))
+        self.assertIsNone(progress.feed("SPEAKING"))
+        self.assertIsNone(progress.feed("SPEAKING"))
+        self.assertEqual(progress.feed("IDLE"), "done")
+
+    def test_user_interruption_or_disconnect_cancels_return(self):
+        for state in ("LISTENING", "BUSY", None):
+            progress = delivery.SpeechProgress()
+            progress.feed("SPEAKING")
+            self.assertEqual(progress.feed(state), "cancelled")
+            self.assertEqual(progress.feed("IDLE"), "cancelled")
+
     def test_plain_text_only(self):
         self.assertEqual(delivery.speech({"id": "one", "text": "Завтра  в 11."}), ("one", "Завтра в 11."))
         self.assertEqual(delivery.speech({"id": "one", "text": "Открой https://private.example/x?q=abc"}), ("one", "Открой ссылка"))
