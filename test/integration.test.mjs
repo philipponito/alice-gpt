@@ -644,6 +644,9 @@ test('home status distinguishes no pairing, offline bridge, old heartbeat and wo
   r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/Мост озвучки недавно/);
   await homeHeartbeat(owner);
   r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/Управление светом доступно/);
+  for(const command of ['Алиса статус дома','Алиса, статус Home Assistant']) {
+    r=res();await alice(request(command),r);assert.match(r.body.response.text,/Управление светом доступно/);
+  }
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
 });
 

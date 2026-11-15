@@ -164,7 +164,7 @@ export default async function handler(req, res) {
   const factsKey = `alice:v1:${hash}:facts`;
 
   try {
-    if(['статус дома','статус home assistant','статус хоум ассистант'].includes(command)) {
+    if(['статус дома','статус home assistant','статус хоум ассистант'].includes(command.replace(/^алиса\s+/,''))) {
       if(!personId) return send('Для проверки подключения войдите в Яндекс-аккаунт в Алисе.');
       try { return send(await homeStatus(hash)); }
       catch { return send('Не удалось проверить связь с Home Assistant: хранилище навыка не ответило.'); }
