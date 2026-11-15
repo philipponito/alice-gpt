@@ -17,6 +17,9 @@ const { executeCalendarAction } = await import('../lib/calendar-actions.mjs');
 const { default: alice } = await import('../api/alice.mjs');
 const { default: connect } = await import('../api/google/connect.mjs');
 const { default: callback } = await import('../api/google/callback.mjs');
+const { voicePairing, bindVoice, voiceOwner, deferVoice, nextVoice, clearVoicePending } = await import('../lib/voice-bridge.mjs');
+const { default: voiceNext } = await import('../api/bridge/next.mjs');
+const { default: voicePair } = await import('../api/bridge/pair.mjs');
 const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
 let db, expiry, calls, provider, background, redisDelay;
@@ -39,6 +42,10 @@ function cmd(c) {
   if (op === 'DEL') { for (const key of [k, ...a]) db.delete(key); return 1; }
   if (op === 'EVAL') {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
+    if (script.includes('-- voice-delivery')) {
+      if (cmd(['GET', keys[0]]) !== args[0] || cmd(['GET', keys[1]])) return 0;
+      cmd(['SET',keys[1],'1','EX',300]); cmd(['DEL',keys[0]]); return 1;
+    }
     if (script.includes("'INCR'")) {
       const value = Number(db.get(keys[0]) || 0) + 1; db.set(keys[0], value); return value;
     }
@@ -434,4 +441,67 @@ test('status reports the saved Drive and Docs scopes without calling providers',
 test('a Google job cannot start without a linked account', async () => {
   assert.match(await startJob(owner,'мой диск','unlinked','session'),/ещё не подключён/);
   assert.equal(background.length,0);
+});
+
+test('voice pairing needs the owner key, is single use and revokes an older bridge', async () => {
+  const code = await voicePairing(owner);
+  await assert.rejects(bindVoice({code,secret:'wrong'},'test-ip'), /unauthorized/);
+  const first = await bindVoice({code,secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  assert.equal(await voiceOwner(`Bearer ${first.token}`),owner);
+  await assert.rejects(bindVoice({code,secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip'), /invalid_pair/);
+  await assert.rejects(voiceOwner('Bearer fake'), /unauthorized/);
+  const second = await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  await assert.rejects(voiceOwner(`Bearer ${first.token}`), /unauthorized/);
+  assert.equal(await voiceOwner(`Bearer ${second.token}`),owner);
+  assert.ok(![...db.values()].some(v=>String(v).includes(second.token)));
+});
+
+test('voice delivery only exposes deferred, completed, recent results once to their owner', async () => {
+  const job='job-test';
+  await putPrivate(`alice:google:job:${owner}:${job}`,{status:'done',answer:'Личное событие.'},300);
+  assert.equal(await deferVoice(owner,job),false);
+  assert.equal(await nextVoice(owner),null); // Heartbeat, but no deferred answer.
+  assert.equal(await deferVoice(owner,job),true);
+  assert.equal(await nextVoice('another-owner'),null);
+  assert.deepEqual(await nextVoice(owner),{id:job,text:'Личное событие.'});
+  assert.equal(await nextVoice(owner),null);
+  await deferVoice(owner,job); // Webhook retry cannot repeat the announcement.
+  assert.equal(await nextVoice(owner),null);
+  await deferVoice(owner,'old-job',Date.now()-91000);
+  await putPrivate(`alice:google:job:${owner}:old-job`,{status:'done',answer:'Старое.'},300);
+  assert.equal(await nextVoice(owner),null);
+  await clearVoicePending(owner);
+  assert.equal(await nextVoice(owner),null);
+});
+
+test('voice endpoint rejects browser forms and unauthorized clients without exposing data', async () => {
+  let r=res(); await voiceNext({method:'POST',headers:{}},r); assert.equal(r.statusCode,403);
+  r=res(); await voicePair({method:'POST',headers:{origin:'https://evil.example','content-type':'application/json'},body:{}},r); assert.equal(r.statusCode,403);
+  r=res(); await voicePair({method:'POST',headers:{'content-type':'text/plain'},body:{}},r); assert.equal(r.statusCode,415);
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  r=res(); await voiceNext({method:'POST',headers:{authorization:`Bearer ${pair.token}`}},r);
+  assert.equal(r.statusCode,204); assert.equal(r.headers['Cache-Control'],'no-store');
+});
+
+test('slow Google requests opt into automatic voice only while the bridge is online', async () => {
+  await tokens();
+  let complete;
+  provider=()=>new Promise(resolve=>{complete=()=>resolve(response({output:[{content:[{type:'output_text',text:'Готовый ответ.'}]}]}));});
+  await nextVoice(owner);
+  const ack=await startJob(owner,'Мои дела','voice-request','session',Date.now()-3400);
+  assert.match(ack,/Озвучу/);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(await nextVoice(owner),null);
+  complete(); await Promise.all(background);
+  assert.equal((await nextVoice(owner)).text,'Готовый ответ.');
+  assert.equal(await nextVoice(owner),null);
+  assert.equal(await pollJob(owner),'Готовый ответ.');
+});
+
+test('a fast answer is returned through Alice and is not also sent to the bridge', async () => {
+  await tokens();
+  provider=()=>response({output:[{content:[{type:'output_text',text:'Быстрый ответ.'}]}]});
+  await nextVoice(owner);
+  assert.equal(await startJob(owner,'Мои дела','fast-request','session'),'Быстрый ответ.');
+  assert.equal(await nextVoice(owner),null);
 });
