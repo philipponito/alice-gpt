@@ -43,6 +43,14 @@ function cmd(c) {
   if (op === 'DEL') { for (const key of [k, ...a]) db.delete(key); return 1; }
   if (op === 'EVAL') {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
+    if (script.includes('-- voice-renew')) {
+      if(cmd(['GET',keys[0]])!==args[0] || !cmd(['GET',keys[1]])) return 0;
+      const threshold=Number(args[1])*1000-86400000;
+      if(expiry.get(keys[0])-Date.now()<threshold || expiry.get(keys[1])-Date.now()<threshold) {
+        for(const key of keys) expiry.set(key,Date.now()+Number(args[1])*1000);
+      }
+      return 1;
+    }
     if (script.includes('-- voice-delivery')) {
       if (cmd(['GET', keys[0]]) !== args[0] || cmd(['GET', keys[1]])) return 0;
       cmd(['SET',keys[1],'1','EX',300]); cmd(['DEL',keys[0]]); return 1;
@@ -456,6 +464,27 @@ test('voice pairing needs the owner key, is single use and revokes an older brid
   await assert.rejects(voiceOwner(`Bearer ${first.token}`), /unauthorized/);
   assert.equal(await voiceOwner(`Bearer ${second.token}`),owner);
   assert.ok(![...db.values()].some(v=>String(v).includes(second.token)));
+});
+
+test('working bridge renews its lease without rewriting it on every poll', async () => {
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  const tokenKey=`alice:voice:token:${digest(pair.token)}`, binding=`alice:voice:binding:${owner}`;
+  const original=expiry.get(tokenKey);
+  await voiceOwner(`Bearer ${pair.token}`);
+  assert.equal(expiry.get(tokenKey),original);
+  for(const key of [tokenKey,binding]) expiry.set(key,Date.now()+2*86400000);
+  await voiceOwner(`Bearer ${pair.token}`);
+  assert.ok(expiry.get(tokenKey)>Date.now()+29*86400000);
+  assert.ok(expiry.get(binding)>Date.now()+29*86400000);
+});
+
+test('expired or revoked bridge credentials cannot renew or resurrect a connection', async () => {
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  const key=`alice:voice:token:${digest(pair.token)}`, binding=`alice:voice:binding:${owner}`;
+  expiry.set(key,Date.now()-1);
+  await assert.rejects(voiceOwner(`Bearer ${pair.token}`),/unauthorized/);
+  assert.equal(db.has(key),false);
+  assert.ok(expiry.get(binding)>Date.now());
 });
 
 test('voice delivery only exposes deferred, completed, recent results once to their owner', async () => {
