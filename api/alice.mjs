@@ -151,7 +151,7 @@ export default async function handler(req, res) {
     // Explicit memory requests retain the original path, even if they mention Google.
     if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|исправь|очисти|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
       try {
-        const google = await handleGoogle({ owner: hash, personId, command, question, body });
+        const google = await handleGoogle({ owner: hash, personId, command, question, body, started });
         if (google) {
           const reply = aliceReply(google.text);
           if (google.buttons) reply.response.buttons = google.buttons;
