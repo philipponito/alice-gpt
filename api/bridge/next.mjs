@@ -1,5 +1,5 @@
 import { secureHeaders } from '../../lib/google-oauth.mjs';
-import { voiceOwner, nextVoice } from '../../lib/voice-bridge.mjs';
+import { voiceOwner, nextVoice, armNativeReply } from '../../lib/voice-bridge.mjs';
 import { homeHeartbeat, nextHome } from '../../lib/home-actions.mjs';
 
 export default async function handler(req, res) {
@@ -12,9 +12,13 @@ export default async function handler(req, res) {
       await homeHeartbeat(owner);
       if(req.body.ready !== true) return res.status(204).end();
       const home=await nextHome(owner);
-      if(home) return res.status(200).json(home);
+      if(home) {
+        if(home.reply_code) await armNativeReply(owner,home.reply_code);
+        return res.status(200).json(home);
+      }
     }
     const delivery = await nextVoice(owner);
+    if(delivery?.reply_code) await armNativeReply(owner,delivery.reply_code);
     return delivery ? res.status(200).json(delivery) : res.status(204).end();
   } catch (error) {
     return res.status(error.message === 'unauthorized' ? 403 : 503).json({ error: error.message === 'unauthorized' ? 'forbidden' : 'unavailable' });

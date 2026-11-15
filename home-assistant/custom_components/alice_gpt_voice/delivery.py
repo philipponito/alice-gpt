@@ -11,7 +11,9 @@ def native_delivery(data):
         return None
     if not isinstance(code, str) or not re.fullmatch(r"[a-f0-9]{64}", code):
         return None
-    return job, f"Скажи навыку Мой GPT ответ колонки {code}"
+    # Long identifiers can be transformed by Alice's natural-language parser.
+    # The authenticated poll arms the one-use reply on the server instead.
+    return job, "Скажи навыку Мой GPT готовый ответ"
 
 
 class SpeechProgress:

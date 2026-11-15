@@ -48,6 +48,10 @@ function cmd(c) {
   if (op === 'DEL') { for (const key of [k, ...a]) db.delete(key); return 1; }
   if (op === 'EVAL') {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
+    if(script.includes('-- native-reply')) {
+      const code=cmd(['GETDEL',keys[0]]);
+      return code?[code,cmd(['GETDEL',args[0]+code])]:null;
+    }
     if(script.includes('-- home-start')) {
       if(cmd(['GET',keys[0]])) return 'duplicate';
       if(!cmd(['GET',keys[1]])) return 'offline';
@@ -550,6 +554,25 @@ test('native delivery returns only its owners finished answer once and leaves th
   assert.ok(!calls.some(c=>c.url.includes('openai.com')||c.url.includes('googleapis.com')));
 });
 
+test('short native reply command reads the armed answer once without passing codes through Alice', async () => {
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  const headers={authorization:`Bearer ${pair.token}`};
+  for(const command of ['Скажи навыку Мой GPT готовый ответ','Алиса готовый ответ','ответ колонки а один два']) {
+    const job=digest(command);
+    await putPrivate(`alice:google:job:${owner}:${job}`,{status:'done',answer:'Первое дело сегодня — позвонить Лилии.'},300);
+    await nextVoice(owner);await deferVoice(owner,job);
+    const polled=res();await voiceNext({method:'POST',headers},polled);
+    assert.equal(polled.statusCode,200);
+    let r=res();await alice(request(command,{body:{request:{original_utterance:command},session:{user:{user_id:'other'},skill_id:'skill-1'}}}),r);
+    assert.ok(!r.body.response.text.includes('Лилии'));
+    r=res();await alice(request(command),r);
+    assert.equal(r.body.response.text,'Первое дело сегодня — позвонить Лилии.');
+    assert.equal(r.body.response.end_session,false);
+    r=res();await alice(request(command),r);assert.match(r.body.response.text,/уже получен/);
+  }
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')||c.url.includes('googleapis.com')));
+});
+
 test('native delivery reply expires and cannot be read using only a device identity', async () => {
   const job='expiry-job';
   await putPrivate(`alice:google:job:${owner}:${job}`,{status:'done',answer:'Private answer.'},300);
@@ -708,6 +731,12 @@ test('old bridges do not acquire light commands; listening bridges only refresh 
   assert.equal(ack.statusCode,403);
   ack=res();await homeResult({method:'POST',headers,body:{id:r.body.id,state:'on'}},ack);
   assert.equal(ack.statusCode,204);
+  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true}},r);
+  assert.match(r.body.reply_code,/^[a-f0-9]{64}$/);
+  const spoken=res();await alice(request('Скажи навыку Мой GPT готовый ответ'),spoken);
+  assert.match(spoken.body.response.text,/Свет в комнате: включено/);
+  assert.equal(spoken.body.response.end_session,false);
+  assert.equal(await nextHome(owner),null);
 });
 
 test('semantic router handles a noncanonical light request without claiming it is already on', async () => {

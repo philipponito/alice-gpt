@@ -170,10 +170,11 @@ export default async function handler(req, res) {
       catch { return send('Не удалось проверить связь с Home Assistant: хранилище навыка не ответило.'); }
     }
     const voiceReply = /^ответ колонки ([a-f0-9]{64})$/.exec(command);
-    if (voiceReply) {
+    const nativeReply = /^(?:алиса\s+)?(?:готовый ответ|ответ колонки)(?:\s+.*)?$/.test(command);
+    if (voiceReply || nativeReply) {
       if (!personId) return send('Для личных ответов войдите в Яндекс-аккаунт в Алисе.');
       try {
-        const answer = await takeVoiceReply(hash, voiceReply[1]);
+        const answer = await takeVoiceReply(hash, voiceReply?.[1]);
         return send(answer || 'Этот ответ уже получен или срок доставки истёк. Скажите «готово», чтобы получить последний результат.');
       } catch { return send('Не удалось получить готовый ответ. Скажите «готово» чуть позже.'); }
     }
