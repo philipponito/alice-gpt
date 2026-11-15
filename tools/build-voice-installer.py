@@ -74,7 +74,7 @@ def install(base, update=False):
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-    print("Installed alice_gpt_voice 0.2.0. Restart Home Assistant. Existing pairing is preserved.")
+    print("Installed alice_gpt_voice 0.3.0. Restart Home Assistant. Existing pairing is preserved.")
     if backup is not None:
         print("Previous component saved in " + str(backup))
 

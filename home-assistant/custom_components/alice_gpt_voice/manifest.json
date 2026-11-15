@@ -1,7 +1,7 @@
 {
   "domain": "alice_gpt_voice",
   "name": "Мой GPT — ответы на колонке",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "config_flow": true,
   "documentation": "https://github.com/philipponito/alice-gpt",
   "codeowners": [],

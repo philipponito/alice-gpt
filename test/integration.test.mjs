@@ -21,6 +21,8 @@ const { default: callback } = await import('../api/google/callback.mjs');
 const { voicePairing, bindVoice, voiceOwner, deferVoice, nextVoice, clearVoicePending } = await import('../lib/voice-bridge.mjs');
 const { default: voiceNext } = await import('../api/bridge/next.mjs');
 const { default: voicePair } = await import('../api/bridge/pair.mjs');
+const { startHome, nextHome, finishHome, homeHeartbeat } = await import('../lib/home-actions.mjs');
+const { default: homeResult } = await import('../api/bridge/home-result.mjs');
 const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
 let db, expiry, calls, provider, background, redisDelay;
@@ -34,6 +36,9 @@ function cmd(c) {
   if (op === 'GET') return db.get(k) ?? null;
   if (op === 'GETDEL') { const value = db.get(k) ?? null; db.delete(k); return value; }
   if (op === 'EXISTS') return db.has(k) ? 1 : 0;
+  if (op === 'LPUSH') { const list=db.get(k)||[]; list.unshift(...a);db.set(k,list);return list.length; }
+  if (op === 'RPOP') { return db.get(k)?.pop() ?? null; }
+  if (op === 'EXPIRE') { expiry.set(k,Date.now()+Number(a[0])*1000);return 1; }
   if (op === 'SET') {
     if (a.includes('NX') && db.has(k)) return null;
     db.set(k, a[0]);
@@ -43,6 +48,23 @@ function cmd(c) {
   if (op === 'DEL') { for (const key of [k, ...a]) db.delete(key); return 1; }
   if (op === 'EVAL') {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
+    if(script.includes('-- home-start')) {
+      if(cmd(['GET',keys[0]])) return 'duplicate';
+      if(!cmd(['GET',keys[1]])) return 'offline';
+      if(cmd(['GET',keys[2]])) return 'busy';
+      cmd(['SET',keys[0],args[0],'EX',120]);cmd(['SET',keys[2],args[0],'EX',45]);
+      cmd(['SET',keys[3],args[1],'EX',90]);return 'queued';
+    }
+    if(script.includes('-- home-claim')) {
+      if(cmd(['GET',keys[0]])!==args[0] || cmd(['GET',keys[1]])) return 0;
+      cmd(['SET',keys[1],'1','EX',90]);return 1;
+    }
+    if(script.includes('-- home-result')) {
+      if(!cmd(['SET',keys[0],'1','NX','EX',90])) return 0;
+      cmd(['SET',keys[1],args[0],'EX',90]);cmd(['LPUSH',keys[2],args[1]]);cmd(['EXPIRE',keys[2],90]);
+      if(cmd(['GET',keys[3]])===args[2]) cmd(['DEL',keys[3]]);
+      return 1;
+    }
     if (script.includes('-- voice-defer')) {
       if (!cmd(['GET',keys[0]])) return 0;
       cmd(['SET',keys[1],args[0],'EX',90]); return 1;
@@ -612,6 +634,79 @@ test('a fast answer is returned through Alice and is not also sent to the bridge
   await nextVoice(owner);
   assert.equal(await startJob(owner,'Мои дела','fast-request','session'),'Быстрый ответ.');
   assert.equal(await nextVoice(owner),null);
+});
+
+test('light requests require a recent capable bridge and an explicit matching user action', async () => {
+  const intent={target:'room_light',action:'on'};
+  assert.match(await startHome(owner,intent,'включи свет','offline'),/недоступен/);
+  await homeHeartbeat(owner);
+  for(const text of ['почему нужно включить свет','скажи «включи свет»','не включи свет','включи свет завтра','выключи свет']) {
+    assert.match(await startHome(owner,intent,text,text),/назовите действие/);
+  }
+  assert.match(await startHome(owner,{target:'computer',action:'off'},'выключи компьютер','bad'),/только включение/);
+  assert.match(await startHome(owner,{target:'kitchen_light',action:'on'},'включи свет в комнате','wrong-target'),/Уточните/);
+  assert.equal(await nextHome(owner),null);
+});
+
+test('light actions are owner-bound, delivered once, and webhook retries do not repeat them', async () => {
+  await homeHeartbeat(owner);
+  assert.match(await startHome(owner,{target:'room_light',action:'off'},'выключи свет','request-1'),/Передаю команду/);
+  assert.equal(await nextHome('other-person'),null);
+  const item=await nextHome(owner);
+  assert.deepEqual({kind:item.kind,target:item.target,action:item.action},{kind:'home_action',target:'room_light',action:'off'});
+  assert.equal(await nextHome(owner),null);
+  assert.match(await startHome(owner,{target:'room_light',action:'off'},'выключи свет','request-1'),/повторно/);
+  assert.match(await startHome(owner,{target:'kitchen_light',action:'on'},'включи кухонную лампу','request-2'),/ещё выполняется/);
+  await assert.rejects(finishHome('other-person',item.id,'off'),/invalid_result/);
+  assert.equal(await finishHome(owner,item.id,'off'),true);
+  assert.equal(await finishHome(owner,item.id,'off'),false);
+  const delivery=await nextHome(owner), r=res();
+  await alice(request(`ответ колонки ${delivery.reply_code}`),r);
+  assert.match(r.body.response.text,/выключено.*Состояние проверено/);
+  assert.equal(r.body.response.end_session,false);
+  assert.equal(await nextHome(owner),null);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')||c.url.includes('googleapis.com')));
+});
+
+test('unverified light results never claim success and expired requests never execute', async () => {
+  await homeHeartbeat(owner);
+  await startHome(owner,{target:'kitchen_light',action:'on'},'включи кухонную лампу','uncertain');
+  const item=await nextHome(owner);
+  await finishHome(owner,item.id,'unknown');
+  const delivery=await nextHome(owner), r=res();
+  await alice(request(`ответ колонки ${delivery.reply_code}`),r);
+  assert.match(r.body.response.text,/не удалось подтвердить/);
+  await startHome(owner,{target:'room_light',action:'on'},'включи свет','stale');
+  expiry.set(`alice:home:pending:${owner}`,Date.now()-1);
+  assert.equal(await nextHome(owner),null);
+});
+
+test('old bridges do not acquire light commands; listening bridges only refresh presence', async () => {
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  await homeHeartbeat(owner);
+  await startHome(owner,{target:'room_light',action:'on'},'включи свет','pending');
+  const headers={authorization:`Bearer ${pair.token}`};
+  let r=res();await voiceNext({method:'POST',headers},r);assert.equal(r.statusCode,204);
+  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:false}},r);assert.equal(r.statusCode,204);
+  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true}},r);
+  assert.equal(r.body.kind,'home_action');
+  let ack=res();await homeResult({method:'POST',headers:{origin:'https://evil.example'},body:{id:r.body.id,state:'on'}},ack);
+  assert.equal(ack.statusCode,403);
+  ack=res();await homeResult({method:'POST',headers,body:{id:r.body.id,state:'on'}},ack);
+  assert.equal(ack.statusCode,204);
+});
+
+test('semantic router can request the allowlisted room light without claiming it is already on', async () => {
+  await homeHeartbeat(owner);
+  provider=(url,opts)=>{
+    assert.equal(url,'https://api.openai.com/v1/responses');
+    assert.ok(JSON.parse(opts.body).text.format.schema.required.includes('home_action'));
+    return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply:'Включено',changes:[],google_route:false,web_route:false,home_action:{action:'on',target:'room_light'}})}]}]});
+  };
+  const r=res();await alice(request('включи свет в комнате'),r);
+  assert.match(r.body.response.text,/Передаю команду/);
+  assert.ok(!r.body.response.text.includes('Включено'));
+  assert.equal((await nextHome(owner)).target,'room_light');
 });
 
 test('Serper key stays in a fixed provider header; results are bounded and never fetched', async () => {

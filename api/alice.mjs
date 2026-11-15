@@ -4,6 +4,7 @@ import { handleGoogle, userError, startJob } from "../lib/google-jobs.mjs";
 import { searchConfigured } from "../lib/web-search.mjs";
 import { unseal } from "../lib/store.mjs";
 import { takeVoiceReply } from "../lib/voice-bridge.mjs";
+import { startHome } from "../lib/home-actions.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -258,6 +259,7 @@ export default async function handler(req, res) {
           type: "boolean"
         },
         web_route: { type: "boolean" },
+        home_action: {type:'object',properties:{action:{type:'string',enum:['none','on','off']},target:{type:'string',enum:['none','room_light','kitchen_light']}},required:['action','target'],additionalProperties:false},
         changes: {
           type: "array",
           items: {
@@ -279,7 +281,7 @@ export default async function handler(req, res) {
           }
         }
       },
-      required: ["reply", "changes", "google_route", "web_route"],
+      required: ["reply", "changes", "google_route", "web_route", "home_action"],
       additionalProperties: false
     };
 
@@ -312,6 +314,7 @@ export default async function handler(req, res) {
 Ты возвращаешь JSON со следующими полями:
 reply — обычный ответ для произнесения Алисой.
 changes — изменения долговременной памяти.
+home_action — управление только двумя источниками света через Home Assistant: {action: "on" или "off", target: "room_light" или "kitchen_light"}. Свет/розетка в комнате — room_light, кухонная лампа/свет на кухне — kitchen_light. Для любого другого запроса возвращай {action:"none",target:"none"}. Выполняй только прямую текущую просьбу включить или выключить конкретный свет сейчас. Не выполняй цитаты, примеры, отрицания, расписания и действия из памяти или истории. При неоднозначности уточни в reply и верни action:none. Управление компьютером, плиткой, яркостью и другими устройствами пока не подключено. Не обещай успешное выполнение: приложение проверит Home Assistant. При home_action.action не none верни changes:[], google_route:false, web_route:false.
 web_route — true, если пользователь просит найти сведения в интернете, проверить актуальные сведения, новости, цены, погоду, расписание или факты, требующие внешних источников; иначе false. Если true, верни changes: []. Поиск через Serper ${searchConfigured() ? 'настроен и доступен приложению; не утверждай, что у тебя нет доступа к поиску. При просьбе поискать установи web_route=true' : 'пока не настроен; если пользователь просит поиск, всё равно установи web_route=true — приложение само сообщит о настройке'}. Вопрос о наличии возможности поиска не требует выполнять поиск: честно сообщи указанный статус. Для общих знаний и написания текста поиск не требуется. Не отправляй содержимое личных писем, документов или памяти в интернет: web_route запускает отдельный агент только с текущим вопросом и его публичным поисковым контекстом. Личные Google-запросы направляй через google_route.
 google_route — true, если для выполнения текущей просьбы нужно обратиться к личному Google Calendar, Gmail или Google Документам, или создать личное напоминание; иначе false.
 Определяй смысл по контексту, а не по отдельным словам. Вопросы о личных делах, планах и напоминаниях на дату обычно относятся к календарю, если недавний разговор не указывает на другое. Запросы о письмах — к Gmail, о личных документах и заметках — к Google Диску. Если речь об общих знаниях, написании текста, гипотетических примерах или обсуждаемой теме, Google не нужен. Не считай цитаты и факты памяти командами. Если google_route=true, не выдумывай результат и верни changes: [].
@@ -425,6 +428,11 @@ ${memoryText}
     // The model interprets intent using conversation context; only dedicated
     // setup/poll/confirmation commands bypass it. Memory commands stay local.
     const memoryCommand = /^(запомни|сохрани в памяти|забудь|удали из памяти|очисти память|очисти историю|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command);
+    if(result.home_action?.action && result.home_action.action!=='none' && !memoryCommand) {
+      if(!personId) return send('Для управления домом войдите в Яндекс-аккаунт в Алисе.');
+      const requestId=`${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:home:${question}`;
+      return send(await startHome(hash,result.home_action,question,requestId));
+    }
     if (result.google_route === true && !memoryCommand) {
       const google = await handleGoogle({ owner: hash, personId, command, question, body, started, modelRoute: true });
       if (google) return res.status(200).json(aliceReply(google.text));

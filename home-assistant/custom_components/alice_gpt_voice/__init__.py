@@ -9,6 +9,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN, ORIGIN
 from .delivery import native_delivery
+from .home import apply_light
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ async def async_setup_entry(hass, entry):
     session = async_get_clientsession(hass)
     lock = asyncio.Lock()
     last_id = None
+    seen_actions = set()
     disabled = False
     alive = True
 
@@ -32,13 +34,15 @@ async def async_setup_entry(hass, entry):
             return
         state = hass.states.get(entry.data["entity_id"])
         # Never fall back to truncated cloud TTS or announce on a guessed device.
-        if not state or state.state in ("unknown", "unavailable") or state.attributes.get("alice_state") != "IDLE":
+        if not state or state.state in ("unknown", "unavailable") or state.attributes.get("alice_state") is None:
             return
+        ready = state.attributes.get("alice_state") == "IDLE"
         async with lock:
             try:
                 async with session.post(
                     f"{ORIGIN}/api/bridge/next",
                     headers={"Authorization": f"Bearer {entry.data['token']}"},
+                    json={"lights": True, "ready": ready},
                     allow_redirects=False,
                     timeout=ClientTimeout(total=8),
                 ) as response:
@@ -48,7 +52,26 @@ async def async_setup_entry(hass, entry):
                         return
                     if response.status != 200:
                         return
-                    item = native_delivery(await response.json())
+                    data = await response.json()
+                if isinstance(data, dict) and data.get("kind") == "home_action":
+                    job = data.get("id")
+                    if not isinstance(job, str) or job in seen_actions:
+                        return
+                    seen_actions.add(job)
+                    if len(seen_actions) > 256:
+                        seen_actions.clear()
+                        seen_actions.add(job)
+                    result = await apply_light(hass, data)
+                    if result is not None:
+                        async with session.post(
+                            f"{ORIGIN}/api/bridge/home-result",
+                            headers={"Authorization": f"Bearer {entry.data['token']}"},
+                            json=result, allow_redirects=False, timeout=ClientTimeout(total=8),
+                        ) as response:
+                            if response.status == 403:
+                                disabled = True
+                    return
+                item = native_delivery(data)
                 if item is None or item[0] == last_id:
                     return
                 last_id, command = item
@@ -71,7 +94,7 @@ async def async_setup_entry(hass, entry):
             except Exception:
                 _LOGGER.warning("Could not deliver a deferred answer; manual retrieval remains available")
 
-    entry.async_on_unload(async_track_time_interval(hass, poll, timedelta(seconds=10)))
+    entry.async_on_unload(async_track_time_interval(hass, poll, timedelta(seconds=5)))
     return True
 
 
