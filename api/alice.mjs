@@ -1,6 +1,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { handleGoogle, userError, startJob } from "../lib/google-jobs.mjs";
+import { relativeReminder } from "../lib/reminders.mjs";
 import { searchConfigured } from "../lib/web-search.mjs";
 import { unseal } from "../lib/store.mjs";
 import { takeVoiceReply } from "../lib/voice-bridge.mjs";
@@ -237,6 +238,12 @@ export default async function handler(req, res) {
     // Dedicated setup/exit/lighting handlers above still return immediately.
     async function processConversation() {
     const send=(text,end=false)=>aliceReply(text,end);
+    if(relativeReminder(question,started)) {
+      let completion,forwardedJob;
+      const google=await handleGoogle({owner:hash,personId,command,question,body,started,modelRoute:true,onWork:(p,id)=>{completion=p;forwardedJob=id;}});
+      return {reply:send(google.text),completion,forwardedJob,forwarded:/^(Проверяю Google\.|Этот запрос уже)/.test(google.text)};
+    }
+
     // Полная очистка памяти.
     if ([
       "очисти память",

@@ -24,7 +24,7 @@ const { default: voicePair } = await import('../api/bridge/pair.mjs');
 const { startHome, nextHome, finishHome, homeHeartbeat } = await import('../lib/home-actions.mjs');
 const { default: homeResult } = await import('../api/bridge/home-result.mjs');
 const { setKeepalive, nextKeepalive, noteSkillActivity, keepaliveStatus } = await import('../lib/keepalive.mjs');
-const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
+const { validateReminder, relativeReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
 let db, expiry, calls, provider, pageProvider, background, redisDelay;
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status }); }
@@ -312,6 +312,34 @@ test('explicit reminder request creates one event without a confirmation turn', 
   assert.match(r.body.response.text,/Напоминание создано/);
   assert.equal(writes,1);
 });
+test('two-minute reminder reaches Calendar directly, uses receipt time and deduplicates webhook retries', async () => {
+  await tokens();let writes=0;
+  const before=Date.now();let event;
+  provider=(url,opts)=>{
+    assert.match(url,/calendar\/v3\/calendars\/primary\/events/);
+    assert.equal(opts.method,'POST');writes++;event=JSON.parse(opts.body);
+    return response({id:event.id});
+  };
+  const question='напомни мне поцеловать жену через 2 минуты';
+  let r=res();await alice(request(question),r);
+  assert.match(r.body.response.text,/Напоминание создано/);
+  assert.equal(event.summary,'поцеловать жену');
+  assert.ok(Date.parse(event.start.dateTime)>=before+120000);
+  assert.ok(Date.parse(event.start.dateTime)<=Date.now()+120000);
+  r=res();await alice(request(question),r);
+  assert.equal(writes,1);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('relative reminders support one minute and word order without executing ambiguous or quoted requests', () => {
+  const received=Date.now()-10000;
+  const item=relativeReminder('Напомни мне через одну минуту выпить воды',received);
+  assert.equal(item.title,'выпить воды');assert.equal(Date.parse(item.when),received+60000);
+  assert.equal(Date.parse(relativeReminder('напомни через два часа позвонить',received).when),received+7200000);
+  for(const q of ['не напомни мне позвонить через 2 минуты','как попросить напомни мне позвонить через 2 минуты','напомни «позвонить» через 2 минуты','напомни завтра позвонить через 2 минуты','напомни через 2 минуты позвонить через 3 минуты'])assert.equal(relativeReminder(q,received),null);
+  assert.throws(()=>relativeReminder('напомни позвонить через 2 минуты',Date.now()-130000),/relative_reminder_expired/);
+});
+
 test('explicit calendar deletion executes once without an extra confirmation', async () => {
   await tokens(); let model=0, deletes=0;
   const event={id:'event1',etag:'"v1"',summary:'Встреча',organizer:{self:true},start:{dateTime:'2026-11-16T11:00:00+03:00'},end:{dateTime:'2026-11-16T12:00:00+03:00'}};
