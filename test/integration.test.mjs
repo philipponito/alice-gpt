@@ -173,6 +173,20 @@ test('explicit voice confirmation performs one calendar insert even if repeated'
   assert.match(again.body.response.text,/Нет ожидающего/);
   assert.equal(writes,1);
 });
+test('explicit reminder request creates one event without a confirmation turn', async () => {
+  await tokens();
+  let writes=0;
+  provider=(url,opts)=>{
+    if (url === 'https://api.openai.com/v1/responses') return response({output:[{type:'function_call',name:'prepare_reminder',arguments:JSON.stringify({title:'Позвонить',when:new Date(Date.now()+86400000).toISOString()}),call_id:'call-1'}]});
+    assert.match(url,/calendar\/v3\/calendars\/primary\/events/); writes++;
+    const event=JSON.parse(opts.body);
+    assert.deepEqual(event.reminders.overrides,[{method:'popup',minutes:30},{method:'popup',minutes:0}]);
+    return response({id:event.id});
+  };
+  const r=res(); await alice(request('напомни завтра позвонить'),r);
+  assert.match(r.body.response.text,/Напоминание создано/);
+  assert.equal(writes,1);
+});
 async function flow() {
   const code = await pairing(owner), r = res();
   const req = { headers: { origin:'https://alice.example.test', cookie:'__Host-google-form=csrf-test' } };
