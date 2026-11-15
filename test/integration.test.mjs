@@ -118,6 +118,12 @@ test('application identity alone cannot connect or read Google', async () => {
   const req = request('мои письма'); req.body.session.user = undefined; req.body.session.application = { application_id:'device-1' };
   const r = res(); await alice(req,r); assert.match(r.body.response.text, /войдите/i); assert.equal(calls.length, 0);
 });
+test('email synonyms are routed to Google rather than ordinary GPT', async () => {
+  for (const question of ['мой последний прочитанный имейл', 'последний email', 'проверь е-мейл']) {
+    const r = res(); await alice(request(question), r);
+    assert.match(r.body.response.text, /Google ещё не подключён/);
+  }
+});
 test('connection page has no secrets or inline scripts and only readonly scopes', async () => {
   const r = res(); await connect({ method:'GET' },r);
   assert.equal(r.statusCode,200); assert.ok(r.headers['Cache-Control'].includes('no-store'));
