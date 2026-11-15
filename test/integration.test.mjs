@@ -126,7 +126,7 @@ test('email synonyms are routed to Google rather than ordinary GPT', async () =>
   }
 });
 test('questions about tasks and plans reach Google Calendar routing', async () => {
-  for (const question of ['какие на завтра задачи?', 'какие планы на завтра?']) {
+  for (const question of ['какие на завтра задачи?', 'какие планы на завтра?', 'какие у меня дела на завтра?']) {
     const r = res(); await alice(request(question), r);
     assert.match(r.body.response.text, /Google ещё не подключён/);
   }
