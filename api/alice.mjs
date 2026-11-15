@@ -120,7 +120,7 @@ export default async function handler(req, res) {
 
   if (!question) {
     const greeting = aliceReply("Слушаю.");
-    greeting.response.tts = '<speaker audio="alice-sounds-game-ping-1.opus">';
+    greeting.response.tts = '<speaker audio="dialogs-upload/dfc4bf35-8600-4996-ad73-daf7a23fe54d/f8e587b7-677b-48b6-aff1-f1f7a7b8a868.opus">';
     return res.status(200).json(greeting);
   }
 
