@@ -531,6 +531,24 @@ test('return command inside the active skill resumes listening without a model r
   assert.equal(calls.length,0);
 });
 
+test('addressed command reaching the active skill uses Google handling without the model', async () => {
+  await tokens();
+  for(const command of ['Скажи навыку Мой GPT статус Google','Алиса скажи навыку «Мой ГПТ» статус гугл']) {
+    const r=res(); await alice(request(command),r);
+    assert.match(r.body.response.text,/В сохранённом подключении разрешены/);
+    assert.equal(r.body.response.end_session,false);
+  }
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('addressed command does not bypass personal identity or webhook authentication', async () => {
+  const body={request:{original_utterance:'Скажи навыку Мой GPT статус Google'},session:{application:{application_id:'device'},skill_id:'skill-1'}};
+  let r=res();await alice(request('',{body}),r);
+  assert.match(r.body.response.text,/войдите в Яндекс/);
+  r=res();await alice(request('Скажи навыку Мой GPT статус Google',{url:'/api/alice?key=wrong'}),r);
+  assert.equal(r.statusCode,403);
+});
+
 test('voice endpoint rejects browser forms and unauthorized clients without exposing data', async () => {
   let r=res(); await voiceNext({method:'POST',headers:{}},r); assert.equal(r.statusCode,403);
   r=res(); await voicePair({method:'POST',headers:{origin:'https://evil.example','content-type':'application/json'},body:{}},r); assert.equal(r.statusCode,403);

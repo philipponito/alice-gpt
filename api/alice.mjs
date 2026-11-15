@@ -98,11 +98,18 @@ export default async function handler(req, res) {
 
   const started = Date.now();
   const body = req.body || {};
-  const question = String(
+  let question = String(
     body.request?.original_utterance || ""
   ).trim();
 
-  const command = normalize(body.request?.command || question);
+  let command = normalize(body.request?.command || question);
+  // A local sendText can reach the current skill with its addressing prefix
+  // intact. Unwrap only this skill's name; never dispatch to another skill.
+  const addressed = /^(?:алиса\s+)?скажи\s+навыку\s+мой\s+(?:gpt|гпт|джипити|джи пи ти)\s+(.+)$/.exec(command);
+  if (addressed) {
+    command = addressed[1];
+    question = command;
+  }
 
   const send = (text, end = false) =>
     res.status(200).json(aliceReply(text, end));
