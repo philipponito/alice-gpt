@@ -67,7 +67,7 @@ function cmd(c) {
       const prev = cmd(['GET', keys[0]]) || cmd(['GET', keys[1]]);
       if (prev) return prev;
       cmd(['SET',keys[0],args[0],'EX',600]);cmd(['SET',keys[1],args[0],'EX',55]);
-      cmd(['SET',keys[2],args[0],'EX',600]);cmd(['SET',keys[3],args[1],'EX',55]); return args[0];
+      cmd(['SET',keys[2],args[0],'EX',600]);cmd(['SET',keys[3],args[1],'EX',55]);cmd(['DEL',keys[5]]); return args[0];
     }
     if (db.get(keys[0]) === args[0]) {
       if (keys[1]) cmd(['SET',keys[1],args[1],'EX',300]);
@@ -587,8 +587,31 @@ test('search self-check bypasses the model and tests only the real provider boun
     return response({organic:[{title:'Public',link:'https://example.com',snippet:'Example'}]});
   };
   const r=res(); await alice(request('проверь поиск'),r);
-  assert.match(r.body.response.text,/Serper отвечает/);
+  await Promise.all(background);
+  assert.match(await pollJob(owner),/Serper отвечает/);
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('search self-check acknowledges before a slow provider completes', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  redisDelay=200;
+  let complete;
+  provider=()=>new Promise(resolve=>{complete=()=>resolve(response({organic:[]}));});
+  const started=Date.now(), r=res();
+  await alice(request('проверь поиск'),r);
+  assert.match(r.body.response.text,/Ищу в интернете/);
+  assert.ok(Date.now()-started<1200,'self-check must not wait for Serper');
+  assert.equal(typeof complete,'function');
+  complete(); await Promise.all(background);
+  assert.match(await pollJob(owner),/Serper отвечает/);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('search launch storage timeout is not reported as a model timeout', async () => {
+  globalThis.fetch=async()=>{throw new DOMException('synthetic timeout','TimeoutError');};
+  const r=res(); await alice(request('проверь поиск'),r);
+  assert.match(r.body.response.text,/хранилище навыка не ответило/);
+  assert.equal(background.length,0);
 });
 
 test('search distinguishes provider connection errors from model API rejection', async () => {

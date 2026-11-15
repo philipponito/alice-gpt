@@ -154,7 +154,8 @@ export default async function handler(req, res) {
   try {
     if (command === 'проверь поиск') {
       const requestId = `${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:search-check`;
-      return send(await startJob(hash, 'проверь поиск', requestId, body.session?.session_id, started, 'web'));
+      try { return send(await startJob(hash, 'проверь поиск', requestId, body.session?.session_id, started, 'web')); }
+      catch { return send('Не удалось запустить проверку: хранилище навыка не ответило. Поиск ещё не выполнялся.'); }
     }
     // Explicit memory requests retain the original path, even if they mention Google.
     if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|очисти память|очисти историю|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
