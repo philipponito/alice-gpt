@@ -19,7 +19,7 @@ const { default: connect } = await import('../api/google/connect.mjs');
 const { default: callback } = await import('../api/google/callback.mjs');
 const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
-let db, expiry, calls, provider, background;
+let db, expiry, calls, provider, background, redisDelay;
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status }); }
 function routeReply(route = true, reply = 'Хорошо') {
   return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply, changes:[], google_route:route})}]}]});
@@ -47,6 +47,7 @@ function cmd(c) {
       cmd(['SET',keys[0],'1','EX',600]); cmd(['SET',keys[1],args[0],'EX',300]); return 1;
     }
     if (script.includes('local prev=')) {
+      if (!db.has(keys[4])) return null;
       const prev = cmd(['GET', keys[0]]) || cmd(['GET', keys[1]]);
       if (prev) return prev;
       cmd(['SET',keys[0],args[0],'EX',600]);cmd(['SET',keys[1],args[0],'EX',55]);
@@ -76,12 +77,15 @@ async function tokens(who = owner, overrides = {}) {
     scopes: ['openid', ...Object.values(SCOPES).flat()], expires: Date.now()+3600000, ...overrides });
 }
 beforeEach(() => {
-  db = new Map(); expiry = new Map(); calls = []; background = [];
+  db = new Map(); expiry = new Map(); calls = []; background = []; redisDelay = 0;
   globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => background.push(p) }) };
   provider = () => { throw new Error('Unexpected external request'); };
   globalThis.fetch = async (url, options = {}) => {
     const href = String(url); calls.push({ url: href, ...options });
-    if (href === 'https://redis.example.test/pipeline') return response(JSON.parse(options.body).map(c => ({ result: cmd(c) })));
+    if (href === 'https://redis.example.test/pipeline') {
+      if (redisDelay) await new Promise(resolve=>setTimeout(resolve,redisDelay));
+      return response(JSON.parse(options.body).map(c => ({ result: cmd(c) })));
+    }
     return provider(href, options);
   };
 });
@@ -401,4 +405,33 @@ test('background acknowledgement is immediate, duplicate webhook does not duplic
 test('callback failure never reflects codes or provider descriptions', async () => {
   const r=res(); await callback({method:'GET',url:'/api/google/callback?code=private-code&error_description=private-value',headers:{}},r);
   assert.equal(r.statusCode,400); assert.ok(!r.body.includes('private-'));
+});
+
+test('slow routing and storage leave a full second of margin before the Yandex deadline', async () => {
+  await tokens(); redisDelay=250; let complete;
+  provider = async (_url,opts) => {
+    if (JSON.parse(opts.body).text) {
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      return routeReply();
+    }
+    return new Promise(resolve=>{complete=()=>resolve(response({output:[{content:[{type:'output_text',text:'Готово.'}]}]}));});
+  };
+  const started=Date.now(), r=res();
+  await alice(request('какие у меня последние три файла на диске'),r);
+  assert.ok(Date.now()-started<3300);
+  assert.match(r.body.response.text,/Проверяю Google/);
+  complete(); await Promise.all(background);
+});
+
+test('status reports the saved Drive and Docs scopes without calling providers', async () => {
+  await tokens(); const r=res();
+  await alice(request('статус google'),r);
+  assert.match(r.body.response.text,/поиск файлов Google Диска/);
+  assert.match(r.body.response.text,/чтение Google Документов/);
+  assert.ok(calls.every(c=>c.url.includes('redis.example.test')));
+});
+
+test('a Google job cannot start without a linked account', async () => {
+  assert.match(await startJob(owner,'мой диск','unlinked','session'),/ещё не подключён/);
+  assert.equal(background.length,0);
 });

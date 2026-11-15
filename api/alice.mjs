@@ -1,7 +1,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { handleGoogle, userError } from "../lib/google-jobs.mjs";
-import { getPrivate } from "../lib/store.mjs";
+import { unseal } from "../lib/store.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -175,9 +175,12 @@ export default async function handler(req, res) {
       return send("Вся сохранённая память очищена.");
     }
 
-    const [rawHistory, rawFacts] = await redis([
+    // Fetch the encrypted short Google context with memory in one round trip.
+    const googleContextKey = `alice:google:context:${hash}`;
+    const [rawHistory, rawFacts, rawGoogle] = await redis([
       ["GET", historyKey],
-      ["GET", factsKey]
+      ["GET", factsKey],
+      ["GET", googleContextKey]
     ]);
 
     const history = parseArray(rawHistory)
@@ -312,7 +315,7 @@ ${memoryText}
     let googleConversation = [];
     if (personId) {
       try {
-        const recent = await getPrivate(`alice:google:context:${hash}`);
+        const recent = rawGoogle ? unseal(rawGoogle, googleContextKey) : null;
         if (Array.isArray(recent)) googleConversation = recent
           .filter(item => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
           .slice(-4).map(item => ({ role: item.role, content: item.content.slice(0, 500) }));
@@ -325,7 +328,9 @@ ${memoryText}
     ];
 
     const elapsed = Date.now() - started;
-    const timeLeft = Math.min(3000, 3650 - elapsed - 550);
+    // Reserve time for storing memory or atomically launching a Google job,
+    // plus transit/cold-start margin outside this handler's elapsed time.
+    const timeLeft = Math.min(2300, 2800 - elapsed - 700);
 
     if (timeLeft < 600) {
       return send("Не успеваю обработать запрос. Повтори вопрос.");
