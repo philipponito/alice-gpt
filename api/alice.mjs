@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { handleGoogle, userError, startJob } from "../lib/google-jobs.mjs";
 import { searchConfigured } from "../lib/web-search.mjs";
 import { unseal } from "../lib/store.mjs";
+import { takeVoiceReply } from "../lib/voice-bridge.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -162,6 +163,14 @@ export default async function handler(req, res) {
   const factsKey = `alice:v1:${hash}:facts`;
 
   try {
+    const voiceReply = /^ответ колонки ([a-f0-9]{64})$/.exec(command);
+    if (voiceReply) {
+      if (!personId) return send('Для личных ответов войдите в Яндекс-аккаунт в Алисе.');
+      try {
+        const answer = await takeVoiceReply(hash, voiceReply[1]);
+        return send(answer || 'Этот ответ уже получен или срок доставки истёк. Скажите «готово», чтобы получить последний результат.');
+      } catch { return send('Не удалось получить готовый ответ. Скажите «готово» чуть позже.'); }
+    }
     if (command === 'проверь поиск') {
       const requestId = `${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:search-check`;
       try { return send(await startJob(hash, 'проверь поиск', requestId, body.session?.session_id, started, 'web')); }

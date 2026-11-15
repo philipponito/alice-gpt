@@ -57,6 +57,7 @@ function cmd(c) {
     }
     if (script.includes('-- voice-delivery')) {
       if (cmd(['GET', keys[0]]) !== args[0] || cmd(['GET', keys[1]])) return 0;
+      cmd(['SET',keys[2],args[1],'EX',90]);
       cmd(['SET',keys[1],'1','EX',300]); cmd(['DEL',keys[0]]); return 1;
     }
     if (script.includes("'INCR'")) {
@@ -498,7 +499,9 @@ test('voice delivery only exposes deferred, completed, recent results once to th
   assert.equal(await nextVoice(owner),null); // Heartbeat, but no deferred answer.
   assert.equal(await deferVoice(owner,job),true);
   assert.equal(await nextVoice('another-owner'),null);
-  assert.deepEqual(await nextVoice(owner),{id:job,text:'Личное событие.'});
+  const delivery = await nextVoice(owner);
+  assert.equal(delivery.id,job); assert.equal(delivery.text,'Личное событие.');
+  assert.match(delivery.reply_code,/^[a-f0-9]{64}$/);
   assert.equal(await nextVoice(owner),null);
   await deferVoice(owner,job); // Webhook retry cannot repeat the announcement.
   assert.equal(await nextVoice(owner),null);
@@ -507,6 +510,36 @@ test('voice delivery only exposes deferred, completed, recent results once to th
   assert.equal(await nextVoice(owner),null);
   await clearVoicePending(owner);
   assert.equal(await nextVoice(owner),null);
+});
+
+test('native delivery returns only its owners finished answer once and leaves the skill listening', async () => {
+  const job='native-job';
+  await putPrivate(`alice:google:job:${owner}:${job}`,{status:'done',answer:'По данным источника, состоялся запуск.'},300);
+  await nextVoice(owner); await deferVoice(owner,job);
+  const delivery=await nextVoice(owner);
+  const command=`Скажи навыку Мой GPT ответ колонки ${delivery.reply_code}`;
+  let r=res(); await alice(request(command,{body:{request:{original_utterance:command},session:{user:{user_id:'another-person'},skill_id:'skill-1'}}}),r);
+  assert.ok(!r.body.response.text.includes('состоялся запуск'));
+  r=res(); await alice(request(command),r);
+  assert.equal(r.body.response.text,'По данным источника, состоялся запуск.');
+  assert.equal(r.body.response.end_session,false);
+  r=res(); await alice(request(command),r);
+  assert.match(r.body.response.text,/уже получен/);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')||c.url.includes('googleapis.com')));
+});
+
+test('native delivery reply expires and cannot be read using only a device identity', async () => {
+  const job='expiry-job';
+  await putPrivate(`alice:google:job:${owner}:${job}`,{status:'done',answer:'Private answer.'},300);
+  await nextVoice(owner); await deferVoice(owner,job);
+  const delivery=await nextVoice(owner), command=`ответ колонки ${delivery.reply_code}`;
+  let r=res(); await alice(request(command,{body:{request:{original_utterance:command},session:{application:{application_id:'device'},skill_id:'skill-1'}}}),r);
+  assert.match(r.body.response.text,/войдите в Яндекс/);
+  const key=`alice:voice:reply:${owner}:${delivery.reply_code}`;
+  assert.ok(!db.get(key).includes('Private answer'));
+  expiry.set(key,Date.now()-1);
+  r=res(); await alice(request(command),r);
+  assert.ok(!r.body.response.text.includes('Private answer'));
 });
 
 test('bridge remains recently online during speech but falls back after it stops polling', async () => {

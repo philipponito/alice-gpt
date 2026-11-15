@@ -4,12 +4,11 @@ import logging
 from datetime import timedelta
 
 from aiohttp import ClientError, ClientTimeout
-from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN, ORIGIN
-from .delivery import speech, SpeechProgress
+from .delivery import native_delivery
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,44 +48,23 @@ async def async_setup_entry(hass, entry):
                         return
                     if response.status != 200:
                         return
-                    item = speech(await response.json())
+                    item = native_delivery(await response.json())
                 if item is None or item[0] == last_id:
                     return
-                last_id, text = item
+                last_id, command = item
                 state = hass.states.get(entry.data["entity_id"])
                 if not alive or not state or state.attributes.get("alice_state") != "IDLE":
                     return
-                # The server already claimed the delivery. Never retry a failed
-                # speech call: an ambiguous failure could otherwise speak twice.
-                progress = SpeechProgress()
-                ended = asyncio.Event()
-
-                @callback
-                def changed(event):
-                    current = event.data.get("new_state")
-                    value = current.attributes.get("alice_state") if current else None
-                    if progress.feed(value) is not None:
-                        ended.set()
-
-                remove = async_track_state_change_event(hass, [entry.data["entity_id"]], changed)
-                try:
-                    await hass.services.async_call(
-                        "media_player", "play_media",
-                        {"entity_id": entry.data["entity_id"],
-                         "media_content_id": text, "media_content_type": "text"},
-                        blocking=True,
-                    )
-                    await asyncio.wait_for(ended.wait(), timeout=150)
-                    if alive and progress.result == "done":
-                        # Fixed app-owned command, never a model/tool supplied command.
-                        await hass.services.async_call(
-                            "media_player", "play_media",
-                            {"entity_id": entry.data["entity_id"],
-                             "media_content_id": "Запусти навык Мой GPT", "media_content_type": "command"},
-                            blocking=True,
-                        )
-                finally:
-                    remove()
+                # The fixed command carries only a one-use reply identifier.
+                # Alice gets the answer from our webhook and continues listening
+                # inside the skill. Never execute model text as a command.
+                # Do not retry after an ambiguous outcome; manual polling remains.
+                await hass.services.async_call(
+                    "media_player", "play_media",
+                    {"entity_id": entry.data["entity_id"],
+                     "media_content_id": command, "media_content_type": "command"},
+                    blocking=True,
+                )
             except (ClientError, TimeoutError, ValueError):
                 # Do not log URLs, tokens, Google answers or provider exceptions.
                 return

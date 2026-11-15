@@ -24,10 +24,12 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import argparse
+import uuid
 
 FILES = json.loads(base64.b64decode("PAYLOAD"))
 
-def install(base):
+def install(base, update=False):
     base = Path(base).resolve()
     if not (base / "configuration.yaml").is_file():
         raise SystemExit("Upload this installer beside configuration.yaml, then run it again.")
@@ -36,8 +38,14 @@ def install(base):
         raise SystemExit("Refusing a symlink custom_components directory.")
     parent.mkdir(exist_ok=True)
     target = parent / "alice_gpt_voice"
-    if target.exists() or target.is_symlink():
+    if target.is_symlink():
+        raise SystemExit("Refusing a symlink component directory.")
+    if target.exists() and not update:
         raise SystemExit("alice_gpt_voice already exists; nothing was overwritten.")
+    if target.exists():
+        old_manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+        if old_manifest.get("domain") != "alice_gpt_voice":
+            raise SystemExit("Refusing to update an unrelated component.")
     temporary = Path(tempfile.mkdtemp(prefix=".alice-gpt-install-", dir=parent))
     try:
         for name, item in FILES.items():
@@ -53,14 +61,29 @@ def install(base):
         manifest = json.loads((temporary / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("domain") != "alice_gpt_voice":
             raise SystemExit("Invalid package domain.")
-        os.rename(temporary, target)
+        backup = None
+        if target.exists():
+            backup = parent / (".alice-gpt-backup-" + uuid.uuid4().hex)
+            os.rename(target, backup)
+        try:
+            os.rename(temporary, target)
+        except BaseException:
+            if backup is not None:
+                os.rename(backup, target)
+            raise
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
-    print("Installed alice_gpt_voice. Restart Home Assistant, then add the integration.")
+    print("Installed alice_gpt_voice 0.2.0. Restart Home Assistant. Existing pairing is preserved.")
+    if backup is not None:
+        print("Previous component saved in " + str(backup))
 
 if __name__ == "__main__":
-    install(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("base", nargs="?", default=Path(__file__).parent)
+    parser.add_argument("--update", action="store_true")
+    args = parser.parse_args()
+    install(args.base, update=args.update)
 '''.replace("PAYLOAD", payload)
 destination = root / "public/install-alice-gpt-voice.py"
 destination.parent.mkdir(parents=True, exist_ok=True)

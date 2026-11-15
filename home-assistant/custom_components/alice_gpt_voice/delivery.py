@@ -2,6 +2,18 @@
 import re
 
 
+def native_delivery(data):
+    """Build only our fixed skill command from a bounded delivery identifier."""
+    if not isinstance(data, dict):
+        return None
+    job, code = data.get("id"), data.get("reply_code")
+    if not isinstance(job, str) or not re.fullmatch(r"[\w-]{1,64}", job):
+        return None
+    if not isinstance(code, str) or not re.fullmatch(r"[a-f0-9]{64}", code):
+        return None
+    return job, f"Скажи навыку Мой GPT ответ колонки {code}"
+
+
 class SpeechProgress:
     """Require observed speech completion; never guess from a fixed delay."""
     def __init__(self):
