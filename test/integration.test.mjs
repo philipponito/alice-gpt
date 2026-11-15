@@ -43,6 +43,10 @@ function cmd(c) {
   if (op === 'DEL') { for (const key of [k, ...a]) db.delete(key); return 1; }
   if (op === 'EVAL') {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
+    if (script.includes('-- voice-defer')) {
+      if (!cmd(['GET',keys[0]])) return 0;
+      cmd(['SET',keys[1],args[0],'EX',90]); return 1;
+    }
     if (script.includes('-- voice-renew')) {
       if(cmd(['GET',keys[0]])!==args[0] || !cmd(['GET',keys[1]])) return 0;
       const threshold=Number(args[1])*1000-86400000;
@@ -503,6 +507,28 @@ test('voice delivery only exposes deferred, completed, recent results once to th
   assert.equal(await nextVoice(owner),null);
   await clearVoicePending(owner);
   assert.equal(await nextVoice(owner),null);
+});
+
+test('bridge remains recently online during speech but falls back after it stops polling', async () => {
+  const realNow=Date.now, started=realNow();
+  try {
+    Date.now=()=>started;
+    await nextVoice(owner);
+    Date.now=()=>started+60000;
+    assert.equal(await deferVoice(owner,'after-conversation'),true);
+    Date.now=()=>started+181000;
+    assert.equal(await deferVoice(owner,'stopped-computer'),false);
+  } finally { Date.now=realNow; }
+});
+
+test('return command inside the active skill resumes listening without a model request', async () => {
+  for(const command of ['Запусти навык Мой GPT','открой мой гпт','Алиса запусти навык Мой GPT']) {
+    const r=res(); await alice(request(command),r);
+    assert.equal(r.body.response.text,'Слушаю.');
+    assert.equal(r.body.response.end_session,false);
+    assert.ok(r.body.response.tts.includes('dialogs-upload/'));
+  }
+  assert.equal(calls.length,0);
 });
 
 test('voice endpoint rejects browser forms and unauthorized clients without exposing data', async () => {
