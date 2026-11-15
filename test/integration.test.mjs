@@ -580,6 +580,27 @@ test('search provider errors are actionable and never expose raw provider descri
   await assert.rejects(searchWeb({query:'x'}),/search_limit/);
 });
 
+test('search self-check bypasses the model and tests only the real provider boundary', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  provider=(url)=>{
+    assert.equal(url,'https://google.serper.dev/search');
+    return response({organic:[{title:'Public',link:'https://example.com',snippet:'Example'}]});
+  };
+  const r=res(); await alice(request('проверь поиск'),r);
+  assert.match(r.body.response.text,/Serper отвечает/);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('search distinguishes provider connection errors from model API rejection', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  provider=()=>{throw new TypeError('synthetic network failure');};
+  await assert.rejects(searchWeb({query:'x'}),/search_provider_network/);
+  provider=()=>response({},502);
+  await assert.rejects(searchWeb({query:'x'}),/search_provider_error/);
+  provider=()=>response({},400);
+  await assert.rejects(runWebAgent('новости',AbortSignal.timeout(1000)),/search_model_error/);
+});
+
 test('ordinary intent router can select web search without a Google connection', async () => {
   process.env.ALICE_GPT_SEARCH='fake-serper'; let modelCalls=0;
   provider=(url,opts)=>{

@@ -152,6 +152,10 @@ export default async function handler(req, res) {
   const factsKey = `alice:v1:${hash}:facts`;
 
   try {
+    if (command === 'проверь поиск') {
+      const requestId = `${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:search-check`;
+      return send(await startJob(hash, 'проверь поиск', requestId, body.session?.session_id, started, 'web'));
+    }
     // Explicit memory requests retain the original path, even if they mention Google.
     if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|очисти память|очисти историю|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
       try {
