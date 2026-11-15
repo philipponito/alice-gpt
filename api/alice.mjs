@@ -1,3 +1,4 @@
+import { runUnifiedAgent } from "../lib/agent.mjs";
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { handleGoogle, userError, startJob } from "../lib/google-jobs.mjs";
@@ -238,7 +239,7 @@ export default async function handler(req, res) {
     // Dedicated setup/exit/lighting handlers above still return immediately.
     async function processConversation() {
     const send=(text,end=false)=>aliceReply(text,end);
-    if(relativeReminder(question,started)) {
+    if(process.env.ALICE_AGENT_MODE==='legacy' && relativeReminder(question,started)) {
       let completion,forwardedJob;
       const google=await handleGoogle({owner:hash,personId,command,question,body,started,modelRoute:true,onWork:(p,id)=>{completion=p;forwardedJob=id;}});
       return {reply:send(google.text),completion,forwardedJob,forwarded:/^(Проверяю Google\.|Этот запрос уже)/.test(google.text)};
@@ -252,7 +253,7 @@ export default async function handler(req, res) {
       "забудь всё",
       "забудь все"
     ].includes(command)) {
-      await redis([["DEL", historyKey, factsKey]]);
+      await redis([["DEL", historyKey, factsKey, `alice:agent:context:${hash}`]]);
       return send("Вся сохранённая память очищена.");
     }
 
@@ -298,8 +299,13 @@ export default async function handler(req, res) {
       "очисти историю",
       "удали историю разговоров"
     ].includes(command)) {
-      await redis([["DEL", historyKey]]);
+      await redis([["DEL", historyKey, `alice:agent:context:${hash}`]]);
       return send("История разговоров очищена. Важные факты сохранены.");
+    }
+
+    if(process.env.ALICE_AGENT_MODE!=='legacy') {
+      const result=await runUnifiedAgent({owner:hash,personId,question,requestId:`${body.session?.session_id||''}:${body.session?.message_id??''}:${question}`,session:body.session?.session_id,messageId:body.session?.message_id,started});
+      return {reply:send(result.text),forwarded:result.forwarded===true};
     }
 
     const schema = {
@@ -552,7 +558,7 @@ ${memoryText}
     // После исправления или удаления факта очищаем
     // краткую историю, чтобы старые сведения не всплывали.
     if (clearHistory) {
-      commands.push(["DEL", historyKey]);
+      commands.push(["DEL", historyKey, `alice:agent:context:${hash}`]);
     } else {
       commands.push([
         "SET", historyKey, JSON.stringify(updatedHistory)

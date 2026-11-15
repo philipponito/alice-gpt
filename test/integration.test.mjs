@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 // Entire suite uses synthetic accounts and a fake Redis/provider; no live mailbox or calendar.
 Object.assign(process.env, {
-  KV_REST_API_URL: 'https://redis.example.test', KV_REST_API_TOKEN: 'fake-redis',
+  ALICE_AGENT_MODE: 'legacy', KV_REST_API_URL: 'https://redis.example.test', KV_REST_API_TOKEN: 'fake-redis',
   ALICE_WEBHOOK_SECRET: 'test-only-webhook-secret-00000000000000000000', OPENAI_API_KEY: 'fake-openai',
   GOOGLE_CLIENT_ID: '123456-testclient.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'fake-client-secret',
   GOOGLE_REDIRECT_URI: 'https://alice.example.test/api/google/callback'
