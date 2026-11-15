@@ -2,7 +2,6 @@ import { secureHeaders } from '../../lib/google-oauth.mjs';
 import { voiceOwner, nextVoice, armNativeReply } from '../../lib/voice-bridge.mjs';
 import { homeHeartbeat, nextHome } from '../../lib/home-actions.mjs';
 import { nextQueuedReply } from '../../lib/deferred-reply.mjs';
-import { nextKeepalive } from '../../lib/keepalive.mjs';
 
 export default async function handler(req, res) {
   secureHeaders(res);
@@ -11,7 +10,7 @@ export default async function handler(req, res) {
   try {
     const owner = await voiceOwner(req.headers?.authorization);
     if(req.body?.lights === true) {
-      await homeHeartbeat(owner,req.body.keepalive === true);
+      await homeHeartbeat(owner);
       if(req.body.ready !== true) return res.status(204).end();
     }
     const queued=await nextQueuedReply(owner);
@@ -29,10 +28,6 @@ export default async function handler(req, res) {
     const delivery = await nextVoice(owner);
     if(delivery?.reply_code) await armNativeReply(owner,delivery.reply_code);
     if(delivery)return res.status(200).json(delivery);
-    if(req.body?.keepalive === true && req.body.keepalive_ready === true) {
-      const pulse=await nextKeepalive(owner);
-      if(pulse)return res.status(200).json(pulse);
-    }
     return res.status(204).end();
   } catch (error) {
     return res.status(error.message === 'unauthorized' ? 403 : 503).json({ error: error.message === 'unauthorized' ? 'forbidden' : 'unavailable' });

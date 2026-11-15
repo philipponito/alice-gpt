@@ -731,38 +731,15 @@ test('home status distinguishes no pairing, offline bridge, old heartbeat and wo
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
 });
 
-test('keepalive is opt-in, respects actual activity and emits only one refresh per interval', async () => {
-  const now=Date.now();
-  assert.equal(await nextKeepalive(owner,now),null);
-  assert.match(await setKeepalive(owner,true,now),/нужен работающий Home Assistant/);
+test('disabled keepalive never emits commands for previously enabled bridge clients', async () => {
+  const key=`alice:keepalive:config:${owner}`;
+  await redis([['SET',key,seal({enabled:true,interval:90000},key)]]);
   const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
   const headers={authorization:`Bearer ${pair.token}`};
-  const polled=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:false,keepalive:true}},polled);
-  assert.match(await setKeepalive(owner,true,now),/Постоянный режим включён/);
-  assert.equal(await nextKeepalive(owner,now+89999),null);
-  assert.deepEqual(await nextKeepalive(owner,now+90000),{kind:'keepalive'});
-  assert.equal(await nextKeepalive(owner,now+90000),null);
-  await noteSkillActivity(owner,false,now+170000);
-  assert.equal(await nextKeepalive(owner,now+180000),null);
-  assert.deepEqual(await nextKeepalive(owner,now+260000),{kind:'keepalive'});
-  await setKeepalive(owner,false);
-  assert.equal(await nextKeepalive(owner,now+999999),null);
-});
-
-test('keepalive probes use a silent model-free command and status reports confirmations, not guessed expiry', async () => {
-  const now=Date.now(),pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
-  const headers={authorization:`Bearer ${pair.token}`};
-  let r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:false,keepalive:true}},r);
-  await setKeepalive(owner,true,now-100000);
-  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true,keepalive:true,keepalive_ready:false}},r);
+  const r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true,keepalive:true,keepalive_ready:true}},r);
   assert.equal(r.statusCode,204);
-  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true,keepalive:true,keepalive_ready:true}},r);
-  assert.deepEqual(r.body,{kind:'keepalive'});
-  r=res();await alice(request('Скажи навыку Мой GPT поддерживай связь'),r);
-  assert.equal(r.body.response.tts,'sil <[100]>');assert.equal(r.body.response.end_session,false);
-  await Promise.all(background);
-  assert.match(await keepaliveStatus(owner),/Последнее подтверждённое обращение/);
-  r=res();await alice(request('хватит'),r);await Promise.all(background);
+  assert.equal(await nextKeepalive(owner,Date.now()+999999),null);
+  assert.match(await setKeepalive(owner,true),/Периодические обращения отключены/);
   assert.equal(await keepaliveStatus(owner),'Постоянный режим выключен.');
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
 });
