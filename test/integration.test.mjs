@@ -636,6 +636,17 @@ test('a fast answer is returned through Alice and is not also sent to the bridge
   assert.equal(await nextVoice(owner),null);
 });
 
+test('home status distinguishes no pairing, offline bridge, old heartbeat and working lights without a model', async () => {
+  let r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/ещё не привязана/);
+  await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/Привязка колонки сохранена/);
+  await nextVoice(owner);
+  r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/Мост озвучки недавно/);
+  await homeHeartbeat(owner);
+  r=res();await alice(request('статус дома'),r);assert.match(r.body.response.text,/Управление светом доступно/);
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
 test('light requests require a recent capable bridge and an explicit matching user action', async () => {
   const intent={target:'room_light',action:'on'};
   assert.match(await startHome(owner,intent,'включи свет','offline'),/недоступен/);

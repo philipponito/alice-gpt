@@ -4,7 +4,7 @@ import { handleGoogle, userError, startJob } from "../lib/google-jobs.mjs";
 import { searchConfigured } from "../lib/web-search.mjs";
 import { unseal } from "../lib/store.mjs";
 import { takeVoiceReply } from "../lib/voice-bridge.mjs";
-import { startHome, quickHome, directLightIntent } from "../lib/home-actions.mjs";
+import { startHome, quickHome, directLightIntent, homeStatus } from "../lib/home-actions.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -164,6 +164,11 @@ export default async function handler(req, res) {
   const factsKey = `alice:v1:${hash}:facts`;
 
   try {
+    if(['статус дома','статус home assistant','статус хоум ассистант'].includes(command)) {
+      if(!personId) return send('Для проверки подключения войдите в Яндекс-аккаунт в Алисе.');
+      try { return send(await homeStatus(hash)); }
+      catch { return send('Не удалось проверить связь с Home Assistant: хранилище навыка не ответило.'); }
+    }
     const voiceReply = /^ответ колонки ([a-f0-9]{64})$/.exec(command);
     if (voiceReply) {
       if (!personId) return send('Для личных ответов войдите в Яндекс-аккаунт в Алисе.');
