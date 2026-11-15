@@ -16,6 +16,7 @@ const { runAgent, startJob, pollJob } = await import('../lib/google-jobs.mjs');
 const { default: alice } = await import('../api/alice.mjs');
 const { default: connect } = await import('../api/google/connect.mjs');
 const { default: callback } = await import('../api/google/callback.mjs');
+const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
 let db, expiry, calls, provider, background;
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status }); }
@@ -124,14 +125,53 @@ test('email synonyms are routed to Google rather than ordinary GPT', async () =>
     assert.match(r.body.response.text, /Google ещё не подключён/);
   }
 });
-test('connection page has no secrets or inline scripts and only readonly scopes', async () => {
+test('connection page has no secrets or inline scripts and separates reminder permission', async () => {
   const r = res(); await connect({ method:'GET' },r);
   assert.equal(r.statusCode,200); assert.ok(r.headers['Cache-Control'].includes('no-store'));
   assert.equal(r.headers['Referrer-Policy'],'same-origin');
   assert.ok(r.headers['Content-Security-Policy'].includes("form-action 'self' https://accounts.google.com;"));
   assert.match(r.headers['Set-Cookie'], /HttpOnly; Secure; SameSite=Lax/);
   assert.ok(!r.body.includes(process.env.ALICE_WEBHOOK_SECRET)); assert.ok(!r.body.includes('<script'));
-  assert.ok(Object.values(SCOPES).flat().every(s => s.endsWith('readonly')));
+  assert.ok(SCOPES.reminders[0].endsWith('calendar.events.owned'));
+  assert.match(r.body, /name="reminders"/);
+});
+test('reminder requires session-bound single-use confirmation and creates two popup notifications', async () => {
+  await tokens();
+  const item = validateReminder({ title:'Позвонить', when:new Date(Date.now()+86400000).toISOString() });
+  assert.match(await presentReminder(owner,'session-1',item), /30 минут/);
+  const claimed = await claimReminder(owner,'session-1');
+  assert.equal(claimed.title,'Позвонить');
+  assert.equal(await claimReminder(owner,'session-1'),null);
+  await presentReminder(owner,'session-1',item);
+  assert.equal(await claimReminder(owner,'session-1'),null);
+  provider = (url, opts) => {
+    assert.equal(url,'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none');
+    assert.equal(opts.method,'POST');
+    const event = JSON.parse(opts.body);
+    assert.deepEqual(event.reminders.overrides,[{method:'popup',minutes:30},{method:'popup',minutes:0}]);
+    assert.equal(event.id,item.id);
+    return response({id:item.id});
+  };
+  assert.match(await createReminder(owner,claimed),/создано/);
+});
+test('reminder is not confirmed across sessions or with invalid dates', async () => {
+  assert.throws(()=>validateReminder({title:'x',when:'y'}));
+  const item=validateReminder({title:'x',when:new Date(Date.now()+86400000).toISOString()});
+  await presentReminder(owner,'a',item);
+  assert.equal(await claimReminder(owner,'b'),null);
+  assert.equal(await claimReminder(owner,'a'),null);
+});
+test('explicit voice confirmation performs one calendar insert even if repeated', async () => {
+  await tokens();
+  const item=validateReminder({title:'Позвонить Лилии',when:new Date(Date.now()+86400000).toISOString()});
+  await presentReminder(owner,'session-1',item);
+  let writes=0;
+  provider=(url,opts)=>{ assert.equal(opts.method,'POST'); writes++; return response({id:item.id}); };
+  const first=res(); await alice(request('подтверждаю'),first);
+  assert.match(first.body.response.text,/создано/);
+  const again=res(); await alice(request('подтверждаю'),again);
+  assert.match(again.body.response.text,/Нет ожидающего/);
+  assert.equal(writes,1);
 });
 async function flow() {
   const code = await pairing(owner), r = res();

@@ -27,9 +27,10 @@ export default async function handler(req, res) {
 <label>Ключ настройки владельца<input type="password" name="secret" required autocomplete="off"></label>
 <small>Используйте GOOGLE_SETUP_SECRET, а если он не настроен — существующий ключ webhook. Не отправляйте его в чат и не вводите на других сайтах.</small>
 <label><input type="checkbox" name="calendar" checked> Читать события календаря</label>
+<label><input type="checkbox" name="reminders"> Создавать напоминания в вашем календаре после подтверждения</label>
 <label><input type="checkbox" name="docs" checked> Искать файлы на Диске и читать Google Документы</label>
 <label><input type="checkbox" name="gmail" checked> Искать и читать письма Gmail</label>
-<p>Выбранные сведения будут передаваться OpenAI только для ответа на ваши запросы. Письма, документы и события считаются данными, а не инструкциями. Создание, отправка, удаление и правки в этой версии отключены.</p>
+<p>Выбранные сведения будут передаваться OpenAI только для ответа на ваши запросы. Напоминание будет создано только после вашего подтверждения. Отправка писем и изменение документов отключены.</p>
 <p>При статусе приложения Testing Google обычно требует повторного подключения через 7 дней. Отозвать разрешение можно в настройках Google-аккаунта.</p>
 <button type="submit">Перейти к согласию Google</button></form></html>`);
   } catch (error) {
