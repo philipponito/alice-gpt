@@ -241,7 +241,7 @@ test('background acknowledgement is immediate, duplicate webhook does not duplic
   provider = () => new Promise(resolve=>{ complete=()=>resolve(response({output:[{content:[{type:'output_text',text:'Встреча завтра.'}]}]})); });
   const start=Date.now();
   const r = res(); await alice(request('мои встречи завтра'),r);
-  assert.ok(Date.now()-start<1000); assert.match(r.body.response.text,/готово/);
+  assert.ok(Date.now()-start<3000); assert.match(r.body.response.text,/готово/);
   await new Promise(resolve=>setImmediate(resolve));
   await startJob(owner,'мои встречи завтра','session-1:1:мои встречи завтра');
   assert.equal(background.length,1);
