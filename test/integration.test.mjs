@@ -20,6 +20,9 @@ const { validateReminder, presentReminder, claimReminder, createReminder } = awa
 const originalFetch = globalThis.fetch;
 let db, expiry, calls, provider, background;
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status }); }
+function routeReply(route = true, reply = 'Хорошо') {
+  return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply, changes:[], google_route:route})}]}]});
+}
 function cmd(c) {
   const [op, k, ...a] = c;
   if (expiry.get(k) <= Date.now()) { db.delete(k); expiry.delete(k); }
@@ -116,20 +119,43 @@ test('GPT, fact memory and existing key format remain working', async () => {
   assert.ok(db.has(`alice:v1:${owner}:facts`)); assert.ok(!db.has(`alice:v1:${owner}:history`));
 });
 test('application identity alone cannot connect or read Google', async () => {
+  provider = () => routeReply();
   const req = request('мои письма'); req.body.session.user = undefined; req.body.session.application = { application_id:'device-1' };
-  const r = res(); await alice(req,r); assert.match(r.body.response.text, /войдите/i); assert.equal(calls.length, 0);
+  const r = res(); await alice(req,r); assert.match(r.body.response.text, /войдите/i);
 });
 test('email synonyms are routed to Google rather than ordinary GPT', async () => {
+  provider = () => routeReply();
   for (const question of ['мой последний прочитанный имейл', 'последний email', 'проверь е-мейл']) {
     const r = res(); await alice(request(question), r);
     assert.match(r.body.response.text, /Google ещё не подключён/);
   }
 });
 test('questions about tasks and plans reach Google Calendar routing', async () => {
+  provider = () => routeReply();
   for (const question of ['какие на завтра задачи?', 'какие планы на завтра?', 'какие у меня дела на завтра?']) {
     const r = res(); await alice(request(question), r);
     assert.match(r.body.response.text, /Google ещё не подключён/);
   }
+});
+test('ordinary discussion remains in GPT and keeps its memory behaviour', async () => {
+  provider = (url, opts) => {
+    assert.match(JSON.parse(opts.body).instructions, /Определяй смысл по контексту/);
+    return routeReply(false, 'Давайте обсудим планы рассказа.');
+  };
+  const r = res(); await alice(request('Обсудим планы рассказа?'), r);
+  assert.equal(r.body.response.text, 'Давайте обсудим планы рассказа.');
+  assert.equal(calls.filter(c => c.url === 'https://api.openai.com/v1/responses').length, 1);
+});
+test('routing model receives recent user Google conversation as context', async () => {
+  const contextKey = `alice:google:context:${owner}`;
+  await putPrivate(contextKey, [{role:'user',content:'Найди письмо о поездке'}], 300);
+  provider = (url, opts) => {
+    const body=JSON.parse(opts.body);
+    assert.ok(body.input.some(x => x.content === 'Найди письмо о поездке'));
+    return routeReply(true);
+  };
+  const r=res(); await alice(request('А от кого оно?'),r);
+  assert.match(r.body.response.text,/Google ещё не подключён/);
 });
 test('connection page has no secrets or inline scripts and separates reminder permission', async () => {
   const r = res(); await connect({ method:'GET' },r);
@@ -183,7 +209,10 @@ test('explicit reminder request creates one event without a confirmation turn', 
   await tokens();
   let writes=0;
   provider=(url,opts)=>{
-    if (url === 'https://api.openai.com/v1/responses') return response({output:[{type:'function_call',name:'prepare_reminder',arguments:JSON.stringify({title:'Позвонить',when:new Date(Date.now()+86400000).toISOString()}),call_id:'call-1'}]});
+    if (url === 'https://api.openai.com/v1/responses') {
+      if (JSON.parse(opts.body).text) return routeReply();
+      return response({output:[{type:'function_call',name:'prepare_reminder',arguments:JSON.stringify({title:'Позвонить',when:new Date(Date.now()+86400000).toISOString()}),call_id:'call-1'}]});
+    }
     assert.match(url,/calendar\/v3\/calendars\/primary\/events/); writes++;
     const event=JSON.parse(opts.body);
     assert.deepEqual(event.reminders.overrides,[{method:'popup',minutes:30},{method:'popup',minutes:0}]);
@@ -298,7 +327,7 @@ test('model tool loop returns factual answer and never exposes tokens to the mod
 });
 test('background acknowledgement is immediate, duplicate webhook does not duplicate work; result can be polled', async () => {
   await tokens(); let complete;
-  provider = () => new Promise(resolve=>{ complete=()=>resolve(response({output:[{content:[{type:'output_text',text:'Встреча завтра.'}]}]})); });
+  provider = (url,opts) => JSON.parse(opts.body).text ? routeReply() : new Promise(resolve=>{ complete=()=>resolve(response({output:[{content:[{type:'output_text',text:'Встреча завтра.'}]}]})); });
   const start=Date.now();
   const r = res(); await alice(request('мои встречи завтра'),r);
   assert.ok(Date.now()-start<3700); assert.match(r.body.response.text,/готово/);

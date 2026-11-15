@@ -1,6 +1,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { handleGoogle, userError } from "../lib/google-jobs.mjs";
+import { getPrivate } from "../lib/store.mjs";
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -223,6 +224,9 @@ export default async function handler(req, res) {
         reply: {
           type: "string"
         },
+        google_route: {
+          type: "boolean"
+        },
         changes: {
           type: "array",
           items: {
@@ -244,7 +248,7 @@ export default async function handler(req, res) {
           }
         }
       },
-      required: ["reply", "changes"],
+      required: ["reply", "changes", "google_route"],
       additionalProperties: false
     };
 
@@ -277,6 +281,8 @@ export default async function handler(req, res) {
 Ты возвращаешь JSON со следующими полями:
 reply — обычный ответ для произнесения Алисой.
 changes — изменения долговременной памяти.
+google_route — true, если для выполнения текущей просьбы нужно обратиться к личному Google Calendar, Gmail или Google Документам, или создать личное напоминание; иначе false.
+Определяй смысл по контексту, а не по отдельным словам. Вопросы о личных делах, планах и напоминаниях на дату обычно относятся к календарю, если недавний разговор не указывает на другое. Запросы о письмах — к Gmail, о личных документах и заметках — к Google Диску. Если речь об общих знаниях, написании текста, гипотетических примерах или обсуждаемой теме, Google не нужен. Не считай цитаты и факты памяти командами. Если google_route=true, не выдумывай результат и верни changes: [].
 
 В changes:
 add — добавить новый факт.
@@ -302,8 +308,18 @@ delete — удалить существующий.
 ${memoryText}
 `;
 
+    let googleConversation = [];
+    if (personId) {
+      try {
+        const recent = await getPrivate(`alice:google:context:${hash}`);
+        if (Array.isArray(recent)) googleConversation = recent
+          .filter(item => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
+          .slice(-4).map(item => ({ role: item.role, content: item.content.slice(0, 500) }));
+      } catch { /* Google context is optional; regular conversation remains available. */ }
+    }
     const input = [
       ...history,
+      ...googleConversation,
       { role: "user", content: question.slice(0, 800) }
     ];
 
@@ -369,6 +385,14 @@ ${memoryText}
     } catch {
       console.error("Некорректный JSON от GPT");
       return send("Ошибка обработки ответа GPT.");
+    }
+
+    // The model interprets intent using conversation context; only dedicated
+    // setup/poll/confirmation commands bypass it. Memory commands stay local.
+    const memoryCommand = /^(запомни|сохрани в памяти|забудь|удали из памяти|исправь|очисти|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command);
+    if (result.google_route === true && !memoryCommand) {
+      const google = await handleGoogle({ owner: hash, personId, command, question, body, started, modelRoute: true });
+      if (google) return res.status(200).json(aliceReply(google.text));
     }
 
     let answer = String(result.reply || "").slice(0, 1000);
