@@ -150,7 +150,7 @@ export default async function handler(req, res) {
 
   try {
     // Explicit memory requests retain the original path, even if they mention Google.
-    if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|исправь|очисти|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
+    if (!/^(запомни|сохрани в памяти|забудь|удали из памяти|очисти память|очисти историю|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command)) {
       try {
         const google = await handleGoogle({ owner: hash, personId, command, question, body, started });
         if (google) {
@@ -389,7 +389,7 @@ ${memoryText}
 
     // The model interprets intent using conversation context; only dedicated
     // setup/poll/confirmation commands bypass it. Memory commands stay local.
-    const memoryCommand = /^(запомни|сохрани в памяти|забудь|удали из памяти|исправь|очисти|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command);
+    const memoryCommand = /^(запомни|сохрани в памяти|забудь|удали из памяти|очисти память|очисти историю|удали всю память|сотри память|покажи память|что ты .*помнишь)/i.test(command);
     if (result.google_route === true && !memoryCommand) {
       const google = await handleGoogle({ owner: hash, personId, command, question, body, started, modelRoute: true });
       if (google) return res.status(200).json(aliceReply(google.text));

@@ -13,6 +13,7 @@ const { seal, unseal, digest, redis, getPrivate, putPrivate, tokenKey } = await 
 const { pairing, begin, finish, accessToken, SCOPES, config } = await import('../lib/google-oauth.mjs');
 const { executeTool, docText, messageText } = await import('../lib/google-tools.mjs');
 const { runAgent, startJob, pollJob } = await import('../lib/google-jobs.mjs');
+const { executeCalendarAction } = await import('../lib/calendar-actions.mjs');
 const { default: alice } = await import('../api/alice.mjs');
 const { default: connect } = await import('../api/google/connect.mjs');
 const { default: callback } = await import('../api/google/callback.mjs');
@@ -40,6 +41,10 @@ function cmd(c) {
     const script = k, count = a[0], keys = a.slice(1, 1+count), args = a.slice(1+count);
     if (script.includes("'INCR'")) {
       const value = Number(db.get(keys[0]) || 0) + 1; db.set(keys[0], value); return value;
+    }
+    if (script.includes("redis.call('SET',KEYS[1],'1','NX'")) {
+      if (db.has(keys[0])) return 0;
+      cmd(['SET',keys[0],'1','EX',600]); cmd(['SET',keys[1],args[0],'EX',300]); return 1;
     }
     if (script.includes('local prev=')) {
       const prev = cmd(['GET', keys[0]]) || cmd(['GET', keys[1]]);
@@ -221,6 +226,43 @@ test('explicit reminder request creates one event without a confirmation turn', 
   const r=res(); await alice(request('напомни завтра позвонить'),r);
   assert.match(r.body.response.text,/Напоминание создано/);
   assert.equal(writes,1);
+});
+test('calendar deletion requires a displayed proposal and is performed once', async () => {
+  await tokens(); let model=0, deletes=0;
+  const event={id:'event1',etag:'"v1"',summary:'Встреча',organizer:{self:true},start:{dateTime:'2026-11-16T11:00:00+03:00'},end:{dateTime:'2026-11-16T12:00:00+03:00'}};
+  provider=(url,opts)=>{
+    if (url==='https://api.openai.com/v1/responses') {
+      if (JSON.parse(opts.body).text) return routeReply();
+      model++;
+      if (model===1) return response({output:[{type:'function_call',name:'calendar_events',arguments:JSON.stringify({start:'2026-11-16T00:00:00+03:00',end:'2026-11-17T00:00:00+03:00'}),call_id:'1'}]});
+      return response({output:[{type:'function_call',name:'propose_calendar_change',arguments:JSON.stringify({kind:'delete',ids:['event1'],when:''}),call_id:'2'}]});
+    }
+    if (opts.method==='DELETE') { deletes++; assert.equal(opts.headers['If-Match'],'"v1"'); return new Response(null,{status:204}); }
+    return response({items:[event]});
+  };
+  const first=res(); await alice(request('удали встречу завтра'),first);
+  assert.match(first.body.response.text,/подтверждаю/); assert.equal(deletes,0);
+  const confirm=res(); await alice(request('подтверждаю'),confirm);
+  assert.match(confirm.body.response.text,/удалено/); assert.equal(deletes,1);
+  const repeat=res(); await alice(request('подтверждаю'),repeat); assert.equal(deletes,1);
+});
+test('a stale calendar version is not reported as changed', async () => {
+  await tokens();
+  provider=()=>response({},412);
+  const results=await executeCalendarAction(owner,{kind:'delete',events:[{id:'abc',title:'Встреча',etag:'"v1"'}]});
+  assert.equal(results[0].status,'changed');
+});
+test('moving an event keeps its duration and uses conditional patch', async () => {
+  await tokens();
+  provider=(url,opts)=>{
+    assert.equal(opts.method,'PATCH'); assert.equal(opts.headers['If-Match'],'"v1"');
+    const patch=JSON.parse(opts.body);
+    assert.deepEqual(Object.keys(patch).sort(),['end','start']);
+    assert.equal(Date.parse(patch.end.dateTime)-Date.parse(patch.start.dateTime),3600000);
+    return response({});
+  };
+  const results=await executeCalendarAction(owner,{kind:'move',when:'2026-11-17T15:00:00+03:00',events:[{id:'abc',title:'Встреча',etag:'"v1"',start:'2026-11-16T11:00:00+03:00',end:'2026-11-16T12:00:00+03:00'}]});
+  assert.equal(results[0].status,'done');
 });
 async function flow() {
   const code = await pairing(owner), r = res();
