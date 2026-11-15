@@ -488,7 +488,7 @@ ${memoryText}
       if (!searchConfigured()) return send('Поиск не настроен: на сервере нужен ключ Serper в ALICE_GPT_SEARCH.');
       const requestId = `${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:web:${question}`;
       let completion,forwardedJob;
-      const answer=await startJob(hash, question, requestId, body.session?.session_id, started, 'web',(p,id)=>{completion=p;forwardedJob=id;});
+      const answer=await startJob(hash, question, requestId, body.session?.session_id, started, 'web',(p,id)=>{completion=p;forwardedJob=id;},history);
       return {reply:send(answer),completion,forwardedJob,forwarded:/^(Ищу в интернете\.|Этот запрос уже)/.test(answer)};
     }
 

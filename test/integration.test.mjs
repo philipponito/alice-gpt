@@ -1049,3 +1049,43 @@ test('ordinary intent router can select web search without a Google connection',
   assert.equal(r.body.response.text,'Ничего не найдено.');
   assert.equal(modelCalls,2);
 });
+
+
+test('web follow-up receives ordinary conversation and searches the referenced phrase without private Google or facts', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  await redis([['SET',`alice:v1:${owner}:history`,JSON.stringify([{role:'user',content:'Откуда фраза «Дорогу осилит идущий»?'},{role:'assistant',content:'Можно проверить происхождение этой фразы.'}])],['SET',`alice:v1:${owner}:facts`,JSON.stringify(['PRIVATE_FACT'])]]);
+  await putPrivate(`alice:google:context:${owner}`,[{role:'assistant',content:'PRIVATE_GOOGLE'}],300);
+  let turns=0, searches=0;
+  provider=(url,opts)=>{
+    const body=JSON.parse(opts.body);
+    if(url==='https://google.serper.dev/search') {
+      searches++;assert.equal(body.q,'Дорогу осилит идущий происхождение');return response({organic:[]});
+    }
+    assert.equal(url,'https://api.openai.com/v1/responses');
+    if(body.text)return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply:'',changes:[],google_route:false,web_route:true})}]}]});
+    assert.ok(opts.body.includes('Дорогу осилит идущий'));
+    assert.ok(!opts.body.includes('PRIVATE_GOOGLE'));assert.ok(!opts.body.includes('PRIVATE_FACT'));
+    assert.equal(body.tool_choice,'auto');
+    return ++turns===1?response({output:[{type:'function_call',name:'web_search',arguments:JSON.stringify({query:'Дорогу осилит идущий происхождение'}),call_id:'reference'}]}):response({output:[{content:[{type:'output_text',text:'Подтвердить происхождение по найденным источникам не удалось.'}]}]});
+  };
+  const r=res();await alice(request('поищи эту фразу в интернете'),r);
+  assert.equal(searches,1);assert.match(r.body.response.text,/происхождение/);
+});
+
+test('ambiguous search asks for the missing subject and cannot search the literal instruction', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';
+  provider=(url,opts)=>{
+    assert.equal(url,'https://api.openai.com/v1/responses');
+    assert.equal(JSON.parse(opts.body).tool_choice,'auto');
+    return response({output:[{content:[{type:'output_text',text:'Какую фразу?'}]}]});
+  };
+  let result=await runWebAgent('поищи эту фразу в интернете',AbortSignal.timeout(1000));
+  assert.match(result.answer,/Какую именно фразу/);
+  provider=(url)=>{
+    assert.equal(url,'https://api.openai.com/v1/responses');
+    return response({output:[{type:'function_call',name:'web_search',arguments:JSON.stringify({query:'поищи эту фразу в интернете'}),call_id:'unresolved'}]});
+  };
+  result=await runWebAgent('поищи эту фразу в интернете',AbortSignal.timeout(1000));
+  assert.match(result.answer,/Какую именно фразу/);
+  assert.ok(!calls.some(c=>c.url.includes('serper.dev')));
+});
