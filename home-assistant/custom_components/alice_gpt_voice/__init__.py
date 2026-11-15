@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 
 from aiohttp import ClientError, ClientTimeout
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 
@@ -60,6 +61,7 @@ async def async_setup_entry(hass, entry):
                 progress = SpeechProgress()
                 ended = asyncio.Event()
 
+                @callback
                 def changed(event):
                     current = event.data.get("new_state")
                     value = current.attributes.get("alice_state") if current else None
