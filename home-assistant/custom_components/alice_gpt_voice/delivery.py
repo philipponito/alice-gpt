@@ -2,6 +2,11 @@
 import re
 
 
+def keepalive_allowed(state, idle_seconds):
+    return bool(state and state.state not in ("playing", "unavailable", "unknown")
+                and state.attributes.get("alice_state") == "IDLE" and idle_seconds >= 20)
+
+
 def native_delivery(data):
     """Build only our fixed skill command from a bounded delivery identifier."""
     if not isinstance(data, dict):

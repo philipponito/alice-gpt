@@ -13,7 +13,7 @@ const { seal, unseal, digest, redis, getPrivate, putPrivate, tokenKey } = await 
 const { pairing, begin, finish, accessToken, SCOPES, config } = await import('../lib/google-oauth.mjs');
 const { executeTool, docText, messageText } = await import('../lib/google-tools.mjs');
 const { runAgent, startJob, pollJob } = await import('../lib/google-jobs.mjs');
-const { searchWeb, runWebAgent } = await import('../lib/web-search.mjs');
+const { searchWeb, runWebAgent, publicSource } = await import('../lib/web-search.mjs');
 const { executeCalendarAction } = await import('../lib/calendar-actions.mjs');
 const { default: alice } = await import('../api/alice.mjs');
 const { default: connect } = await import('../api/google/connect.mjs');
@@ -23,9 +23,10 @@ const { default: voiceNext } = await import('../api/bridge/next.mjs');
 const { default: voicePair } = await import('../api/bridge/pair.mjs');
 const { startHome, nextHome, finishHome, homeHeartbeat } = await import('../lib/home-actions.mjs');
 const { default: homeResult } = await import('../api/bridge/home-result.mjs');
+const { setKeepalive, nextKeepalive, noteSkillActivity, keepaliveStatus } = await import('../lib/keepalive.mjs');
 const { validateReminder, presentReminder, claimReminder, createReminder } = await import('../lib/reminders.mjs');
 const originalFetch = globalThis.fetch;
-let db, expiry, calls, provider, background, redisDelay;
+let db, expiry, calls, provider, pageProvider, background, redisDelay;
 function response(data, status = 200) { return new Response(JSON.stringify(data), { status }); }
 function routeReply(route = true, reply = 'Хорошо') {
   return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply, changes:[], google_route:route})}]}]});
@@ -52,6 +53,34 @@ function cmd(c) {
       const code=cmd(['GETDEL',keys[0]]);
       return code?[code,cmd(['GETDEL',args[0]+code])]:null;
     }
+    if(script.includes('-- keepalive-activity')) {
+      if(Number(cmd(['GET',keys[0]])||0)<Number(args[0]))cmd(['SET',keys[0],args[0],'EX',86400]);
+      return 1;
+    }
+    if(script.includes('-- keepalive-issue')) {
+      if(cmd(['GET',keys[0]])!==args[0])return 0;
+      if(Number(args[1])-Math.max(Number(cmd(['GET',keys[1]])||0),Number(cmd(['GET',keys[2]])||0))<90000)return 0;
+      cmd(['SET',keys[1],args[1],'EX',86400]);return 1;
+    }
+    if(script.includes('-- deferred-start')) {
+      const online=cmd(['GET',keys[3]])?1:0,previous=cmd(['GET',keys[0]]);
+      if(previous)return [previous,online];
+      cmd(['SET',keys[0],args[0],'EX',600]);
+      cmd(['SET',keys[1],args[0],'EX',600]);
+      cmd(['SET',keys[2],args[1],'EX',300]);return [args[0],online];
+    }
+    if(script.includes('-- deferred-publish')) {
+      if(!cmd(['SET',keys[0],'1','NX','EX',300]))return 0;
+      cmd(['SET',keys[1],args[0],'EX',300]);
+      if(args[3]==='1') {
+        cmd(['SET',keys[2],args[1],'EX',90]);cmd(['LPUSH',keys[3],args[2]]);cmd(['EXPIRE',keys[3],90]);
+      }
+      return 1;
+    }
+    if(script.includes('-- deferred-forward')) {
+      if(cmd(['GET',keys[0]])===args[0])cmd(['SET',keys[0],args[1],'EX',600]);
+      return 1;
+    }
     if(script.includes('-- home-start')) {
       if(cmd(['GET',keys[0]])) return 'duplicate';
       if(!cmd(['GET',keys[1]])) return 'offline';
@@ -65,7 +94,7 @@ function cmd(c) {
     }
     if(script.includes('-- home-result')) {
       if(!cmd(['SET',keys[0],'1','NX','EX',90])) return 0;
-      cmd(['SET',keys[1],args[0],'EX',90]);cmd(['LPUSH',keys[2],args[1]]);cmd(['EXPIRE',keys[2],90]);
+      if(args[3]!=='silent') {cmd(['SET',keys[1],args[0],'EX',90]);cmd(['LPUSH',keys[2],args[1]]);cmd(['EXPIRE',keys[2],90]);}
       if(cmd(['GET',keys[3]])===args[2]) cmd(['DEL',keys[3]]);
       return 1;
     }
@@ -128,12 +157,14 @@ beforeEach(() => {
   delete process.env.ALICE_GPT_SEARCH;
   globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => background.push(p) }) };
   provider = () => { throw new Error('Unexpected external request'); };
+  pageProvider = () => response({text:''});
   globalThis.fetch = async (url, options = {}) => {
     const href = String(url); calls.push({ url: href, ...options });
     if (href === 'https://redis.example.test/pipeline') {
       if (redisDelay) await new Promise(resolve=>setTimeout(resolve,redisDelay));
       return response(JSON.parse(options.body).map(c => ({ result: cmd(c) })));
     }
+    if(href==='https://scrape.serper.dev/') return pageProvider(href,options);
     return provider(href, options);
   };
 });
@@ -159,7 +190,9 @@ test('webhook rejects missing/wrong secrets, exit remains immediate with no exte
     const r = res(); await alice(request('письма', { url }), r); assert.equal(r.statusCode, 403);
   }
   const r = res(); await alice(request('хватит'), r);
-  assert.equal(r.body.response.end_session, true); assert.equal(calls.length, 0);
+  assert.equal(r.body.response.end_session, true);
+  assert.ok(calls.every(c=>c.url.includes('redis.example.test')));
+  await Promise.all(background);
 });
 test('GPT, fact memory and existing key format remain working', async () => {
   provider = (url, options) => {
@@ -444,7 +477,7 @@ test('background acknowledgement is immediate, duplicate webhook does not duplic
   assert.ok(Date.now()-start<3700); assert.match(r.body.response.text,/готово/);
   await new Promise(resolve=>setImmediate(resolve));
   await startJob(owner,'мои встречи завтра','session-1:1:мои встречи завтра');
-  assert.equal(background.length,1);
+  assert.ok(background.length>=1);
   assert.match(await pollJob(owner),/Ещё/);
   complete(); await Promise.all(background);
   assert.equal(await pollJob(owner),'Встреча завтра.');
@@ -467,8 +500,33 @@ test('slow routing and storage leave a full second of margin before the Yandex d
   const started=Date.now(), r=res();
   await alice(request('какие у меня последние три файла на диске'),r);
   assert.ok(Date.now()-started<3300);
-  assert.match(r.body.response.text,/Проверяю Google/);
+  assert.match(r.body.response.text,/Обрабатываю запрос|Проверяю Google/);
   complete(); await Promise.all(background);
+  assert.equal(await pollJob(owner),'Готово.');
+});
+
+test('a slow model request continues once in background and is delivered through the native bridge', async () => {
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  await homeHeartbeat(owner);
+  let complete, modelSignal, modelCalls=0;
+  provider=(_url,opts)=>{
+    modelCalls++;modelSignal=opts.signal;
+    return new Promise(resolve=>{complete=()=>resolve(routeReply(false,'Продуманный ответ.'));});
+  };
+  const started=Date.now(), r=res();await alice(request('Расскажи подробнее о теме'),r);
+  assert.ok(Date.now()-started<3300);
+  assert.equal(r.body.response.tts,'<speaker audio="alice-sounds-game-ping-1.opus">');
+  assert.equal(modelSignal.aborted,false);
+  assert.equal(modelCalls,1);
+  complete();await Promise.all(background);
+  assert.equal(await pollJob(owner),'Продуманный ответ.');
+  let polled=res();await voiceNext({method:'POST',headers:{authorization:`Bearer ${pair.token}`},body:{lights:true,ready:true}},polled);
+  assert.equal(polled.statusCode,200);
+  const answer=res();await alice(request('готовый ответ'),answer);
+  assert.equal(answer.body.response.text,'Продуманный ответ.');
+  polled=res();await voiceNext({method:'POST',headers:{authorization:`Bearer ${pair.token}`},body:{lights:true,ready:true}},polled);
+  assert.equal(polled.statusCode,204);
+  assert.equal(modelCalls,1);
 });
 
 test('status reports the saved Drive and Docs scopes without calling providers', async () => {
@@ -673,6 +731,42 @@ test('home status distinguishes no pairing, offline bridge, old heartbeat and wo
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
 });
 
+test('keepalive is opt-in, respects actual activity and emits only one refresh per interval', async () => {
+  const now=Date.now();
+  assert.equal(await nextKeepalive(owner,now),null);
+  assert.match(await setKeepalive(owner,true,now),/нужен работающий Home Assistant/);
+  const pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  const headers={authorization:`Bearer ${pair.token}`};
+  const polled=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:false,keepalive:true}},polled);
+  assert.match(await setKeepalive(owner,true,now),/Постоянный режим включён/);
+  assert.equal(await nextKeepalive(owner,now+89999),null);
+  assert.deepEqual(await nextKeepalive(owner,now+90000),{kind:'keepalive'});
+  assert.equal(await nextKeepalive(owner,now+90000),null);
+  await noteSkillActivity(owner,false,now+170000);
+  assert.equal(await nextKeepalive(owner,now+180000),null);
+  assert.deepEqual(await nextKeepalive(owner,now+260000),{kind:'keepalive'});
+  await setKeepalive(owner,false);
+  assert.equal(await nextKeepalive(owner,now+999999),null);
+});
+
+test('keepalive probes use a silent model-free command and status reports confirmations, not guessed expiry', async () => {
+  const now=Date.now(),pair=await bindVoice({code:await voicePairing(owner),secret:process.env.ALICE_WEBHOOK_SECRET},'test-ip');
+  const headers={authorization:`Bearer ${pair.token}`};
+  let r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:false,keepalive:true}},r);
+  await setKeepalive(owner,true,now-100000);
+  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true,keepalive:true,keepalive_ready:false}},r);
+  assert.equal(r.statusCode,204);
+  r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true,keepalive:true,keepalive_ready:true}},r);
+  assert.deepEqual(r.body,{kind:'keepalive'});
+  r=res();await alice(request('Скажи навыку Мой GPT поддерживай связь'),r);
+  assert.equal(r.body.response.tts,'sil <[100]>');assert.equal(r.body.response.end_session,false);
+  await Promise.all(background);
+  assert.match(await keepaliveStatus(owner),/Последнее подтверждённое обращение/);
+  r=res();await alice(request('хватит'),r);await Promise.all(background);
+  assert.equal(await keepaliveStatus(owner),'Постоянный режим выключен.');
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
 test('light requests require a recent capable bridge and an explicit matching user action', async () => {
   const intent={target:'room_light',action:'on'};
   assert.match(await startHome(owner,intent,'включи свет','offline'),/недоступен/);
@@ -697,10 +791,7 @@ test('light actions are owner-bound, delivered once, and webhook retries do not 
   await assert.rejects(finishHome('other-person',item.id,'off'),/invalid_result/);
   assert.equal(await finishHome(owner,item.id,'off'),true);
   assert.equal(await finishHome(owner,item.id,'off'),false);
-  const delivery=await nextHome(owner), r=res();
-  await alice(request(`ответ колонки ${delivery.reply_code}`),r);
-  assert.match(r.body.response.text,/выключено.*Состояние проверено/);
-  assert.equal(r.body.response.end_session,false);
+  assert.equal(await nextHome(owner),null); // Success is silent.
   assert.equal(await nextHome(owner),null);
   assert.ok(!calls.some(c=>c.url.includes('openai.com')||c.url.includes('googleapis.com')));
 });
@@ -732,10 +823,7 @@ test('old bridges do not acquire light commands; listening bridges only refresh 
   ack=res();await homeResult({method:'POST',headers,body:{id:r.body.id,state:'on'}},ack);
   assert.equal(ack.statusCode,204);
   r=res();await voiceNext({method:'POST',headers,body:{lights:true,ready:true}},r);
-  assert.match(r.body.reply_code,/^[a-f0-9]{64}$/);
-  const spoken=res();await alice(request('Скажи навыку Мой GPT готовый ответ'),spoken);
-  assert.match(spoken.body.response.text,/Свет в комнате: включено/);
-  assert.equal(spoken.body.response.end_session,false);
+  assert.equal(r.statusCode,204); // No successful-action announcement.
   assert.equal(await nextHome(owner),null);
 });
 
@@ -747,7 +835,7 @@ test('semantic router handles a noncanonical light request without claiming it i
     return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply:'Включено',changes:[],google_route:false,web_route:false,home_action:{action:'on',target:'room_light'}})}]}]});
   };
   const r=res();await alice(request('включи обычный свет в комнате'),r);
-  assert.match(r.body.response.text,/Передаю команду/);
+  assert.equal(r.body.response.tts,'sil <[100]>');
   assert.ok(!r.body.response.text.includes('Включено'));
   assert.equal((await nextHome(owner)).target,'room_light');
 });
@@ -755,7 +843,7 @@ test('semantic router handles a noncanonical light request without claiming it i
 test('simple light commands bypass the model and use the configured default room', async () => {
   await homeHeartbeat(owner);
   const r=res();await alice(request('включи свет'),r);
-  assert.match(r.body.response.text,/Передаю команду/);
+  assert.equal(r.body.response.tts,'sil <[100]>');
   assert.equal((await nextHome(owner)).target,'room_light');
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
 });
@@ -766,7 +854,7 @@ test('light location follow-up preserves the requested action without a model ca
   assert.match(r.body.response.text,/в комнате или на кухне/);
   const body=request('в комнате').body;body.session.message_id=2;
   r=res();await alice(request('',{body}),r);
-  assert.match(r.body.response.text,/Передаю команду/);
+  assert.equal(r.body.response.tts,'sil <[100]>');
   const item=await nextHome(owner);
   assert.equal(item.target,'room_light');assert.equal(item.action,'off');
   assert.ok(!calls.some(c=>c.url.includes('openai.com')));
@@ -852,6 +940,42 @@ test('model cannot execute another search after the server disables tools', asyn
   assert.equal(searches,2);
 });
 
+test('web answers can read at most two public search sources through the fixed Serper extraction endpoint', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';let models=0,reads=0;
+  pageProvider=(url,opts)=>{
+    assert.equal(url,'https://scrape.serper.dev/');assert.equal(opts.headers['X-API-KEY'],'fake-serper');assert.equal(opts.redirect,'error');
+    assert.ok(['https://example.com/one','https://example.com/two'].includes(JSON.parse(opts.body).url));
+    reads++;return response({text:'Подтверждённая дата цифрового релиза. '.repeat(500)});
+  };
+  provider=(url,opts)=>{
+    if(url==='https://google.serper.dev/search') return response({organic:[{title:'One',link:'https://example.com/one'},{title:'Private',link:'https://127.0.0.1/secret'},{title:'Two',link:'https://example.com/two'}]});
+    const body=JSON.parse(opts.body);
+    assert.ok(body.instructions.includes('цифровой релиз'));
+    assert.match(body.instructions,/неделя с \d{4}-\d{2}-\d{2}/);
+    if(++models===1)return response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"цифровые премьеры HD этой недели"}',call_id:'sources'}]});
+    const result=JSON.parse(body.input.find(x=>x.type==='function_call_output').output);
+    assert.equal(result.pages.length,2);assert.equal(result.pages[0].text.length,9000);assert.equal(result.pages[0].truncated,true);
+    return response({output:[{content:[{type:'output_text',text:'Подтверждён один цифровой релиз.'}]}]});
+  };
+  assert.equal((await runWebAgent('Какие фильмы вышли в HD онлайн на этой неделе?',AbortSignal.timeout(1000))).answer,'Подтверждён один цифровой релиз.');
+  assert.equal(reads,2);
+  for(const url of ['https://localhost/','https://127.1/','https://[::1]/','https://metadata.google.internal/','http://example.com/','https://user:pass@example.com/','https://example.com:8443/']) assert.equal(publicSource(url),false);
+});
+
+test('unavailable page extraction leaves snippets usable without claiming a full page was read', async () => {
+  process.env.ALICE_GPT_SEARCH='fake-serper';let models=0;
+  pageProvider=()=>response({},403);
+  provider=(url,opts)=>{
+    if(url==='https://google.serper.dev/search')return response({organic:[{title:'Example',link:'https://example.com/one',snippet:'Краткое сообщение'}]});
+    const body=JSON.parse(opts.body);
+    if(++models===1)return response({output:[{type:'function_call',name:'web_search',arguments:'{"query":"новости"}',call_id:'fallback'}]});
+    const found=JSON.parse(body.input.find(x=>x.type==='function_call_output').output);
+    assert.deepEqual(found.pages,[]);assert.equal(found.pageReadFailures,1);assert.equal(found.snippetsOnly,true);
+    return response({output:[{content:[{type:'output_text',text:'Нашёл краткое сообщение; дату релиза подтвердить не удалось.'}]}]});
+  };
+  assert.match((await runWebAgent('новости',AbortSignal.timeout(1000))).answer,/Нашёл краткое сообщение/);
+});
+
 test('search provider errors are actionable and never expose raw provider descriptions', async () => {
   await assert.rejects(searchWeb({query:'x'}),/search_not_configured/);
   process.env.ALICE_GPT_SEARCH='fake-serper';
@@ -892,7 +1016,7 @@ test('search launch storage timeout is not reported as a model timeout', async (
   globalThis.fetch=async()=>{throw new DOMException('synthetic timeout','TimeoutError');};
   const r=res(); await alice(request('проверь поиск'),r);
   assert.match(r.body.response.text,/хранилище навыка не ответило/);
-  assert.equal(background.length,0);
+  assert.ok(![...db.keys()].some(key=>key.startsWith('alice:google:job:')));
 });
 
 test('search distinguishes provider connection errors from model API rejection', async () => {

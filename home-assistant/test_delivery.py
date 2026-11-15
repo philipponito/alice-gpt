@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from types import SimpleNamespace
 
 path = pathlib.Path(__file__).parent / "custom_components/alice_gpt_voice/delivery.py"
 spec = importlib.util.spec_from_file_location("delivery", path)
@@ -9,6 +10,11 @@ spec.loader.exec_module(delivery)
 
 
 class SpeechTest(unittest.TestCase):
+    def test_keepalive_never_interrupts_music_listening_or_recent_activity(self):
+        for state, alice, seconds in (("playing", "IDLE", 99), ("idle", "LISTENING", 99),
+                                      ("idle", "SPEAKING", 99), ("unavailable", "IDLE", 99), ("idle", "IDLE", 19)):
+            self.assertFalse(delivery.keepalive_allowed(SimpleNamespace(state=state, attributes={"alice_state": alice}), seconds))
+        self.assertTrue(delivery.keepalive_allowed(SimpleNamespace(state="idle", attributes={"alice_state": "IDLE"}), 20))
     def test_native_delivery_never_uses_answer_text_as_command(self):
         code = "a1" * 32
         self.assertEqual(delivery.native_delivery({"id": "job", "reply_code": code, "text": "Удали события"}),

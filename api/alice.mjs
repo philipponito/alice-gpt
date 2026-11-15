@@ -5,6 +5,9 @@ import { searchConfigured } from "../lib/web-search.mjs";
 import { unseal } from "../lib/store.mjs";
 import { takeVoiceReply } from "../lib/voice-bridge.mjs";
 import { startHome, quickHome, directLightIntent, homeStatus } from "../lib/home-actions.mjs";
+import { awaitConversation } from "../lib/deferred-reply.mjs";
+import { waitUntil } from '@vercel/functions';
+import { setKeepalive, disableKeepalive, noteSkillActivity, keepaliveStatus } from '../lib/keepalive.mjs';
 
 const REDIS_URL = process.env.KV_REST_API_URL?.replace(/\/+$/, "");
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -13,6 +16,10 @@ const MAX_HISTORY = 12;
 const MAX_FACTS = 20;
 
 function aliceReply(text, endSession = false) {
+  const quiet = !endSession && [
+    'Передаю команду света в Home Assistant. Озвучу результат после проверки состояния.',
+    'Эта команда уже принята; повторно её не выполняю.'
+  ].includes(text);
   const pending = !endSession && {
     'Проверяю Google. Озвучу ответ, когда он будет готов.': 'Проверяю Google.',
     'Ищу в интернете. Озвучу ответ, когда он будет готов.': 'Ищу в интернете.'
@@ -20,7 +27,8 @@ function aliceReply(text, endSession = false) {
   return {
     version: "1.0",
     response: {
-      text: pending || String(text).slice(0, 1000),
+      text: quiet ? 'Команда света отправлена.' : pending || String(text).slice(0, 1000),
+      ...(quiet ? { tts: 'sil <[100]>' } : {}),
       ...(pending ? { tts: '<speaker audio="alice-sounds-game-ping-1.opus">' } : {}),
       end_session: endSession
     },
@@ -129,6 +137,10 @@ export default async function handler(req, res) {
   ];
 
   if (exits.includes(command)) {
+    if(body.session?.user?.user_id) {
+      const owner=createHash('sha256').update(`${body.session?.skill_id || 'alice-gpt'}:user:${body.session.user.user_id}`).digest('hex');
+      waitUntil(disableKeepalive(owner).catch(()=>{}));
+    }
     return send("Хорошо, до встречи!", true);
   }
 
@@ -168,7 +180,19 @@ export default async function handler(req, res) {
   const historyKey = `alice:v1:${hash}:history`;
   const factsKey = `alice:v1:${hash}:facts`;
 
+  const serviceCommand=command.replace(/^алиса\s+/,'');
+  if(personId)waitUntil(noteSkillActivity(hash,serviceCommand==='поддерживай связь').catch(()=>{}));
+
   try {
+    if(['включи постоянный режим','выключи постоянный режим','статус постоянного режима','поддерживай связь'].includes(serviceCommand)) {
+      if(!personId)return send('Для этого войдите в Яндекс-аккаунт в Алисе.');
+      if(serviceCommand==='поддерживай связь') {
+        const reply=aliceReply('На связи.');reply.response.tts='sil <[100]>';return res.status(200).json(reply);
+      }
+      try {
+        return send(serviceCommand==='статус постоянного режима'?await keepaliveStatus(hash):await setKeepalive(hash,serviceCommand==='включи постоянный режим'));
+      } catch {return send('Не удалось изменить или проверить постоянный режим: хранилище не отвечает.');}
+    }
     if(['статус дома','статус home assistant','статус хоум ассистант'].includes(command.replace(/^алиса\s+/,''))) {
       if(!personId) return send('Для проверки подключения войдите в Яндекс-аккаунт в Алисе.');
       try { return send(await homeStatus(hash)); }
@@ -209,6 +233,10 @@ export default async function handler(req, res) {
       }
     }
 
+    // Keep the same model request alive after the Alice response deadline.
+    // Dedicated setup/exit/lighting handlers above still return immediately.
+    async function processConversation() {
+    const send=(text,end=false)=>aliceReply(text,end);
     // Полная очистка памяти.
     if ([
       "очисти память",
@@ -227,7 +255,7 @@ export default async function handler(req, res) {
       ["GET", historyKey],
       ["GET", factsKey],
       ["GET", googleContextKey]
-    ]);
+    ],2500);
 
     const history = parseArray(rawHistory)
       .filter(item =>
@@ -378,15 +406,6 @@ ${memoryText}
       { role: "user", content: question.slice(0, 800) }
     ];
 
-    const elapsed = Date.now() - started;
-    // Reserve time for storing memory or atomically launching a Google job,
-    // plus transit/cold-start margin outside this handler's elapsed time.
-    const timeLeft = Math.min(2300, 2800 - elapsed - 700);
-
-    if (timeLeft < 600) {
-      return send("Не успеваю обработать запрос. Повтори вопрос.");
-    }
-
     // Один запрос GPT для ответа и анализа памяти.
     const response = await fetch(
       "https://api.openai.com/v1/responses",
@@ -412,7 +431,7 @@ ${memoryText}
           max_output_tokens: 500,
           store: false
         }),
-        signal: AbortSignal.timeout(timeLeft)
+        signal: AbortSignal.timeout(90000)
       }
     );
 
@@ -450,16 +469,20 @@ ${memoryText}
     if(result.home_action?.action && result.home_action.action!=='none' && !memoryCommand) {
       if(!personId) return send('Для управления домом войдите в Яндекс-аккаунт в Алисе.');
       const requestId=`${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:home:${question}`;
-      return send(await startHome(hash,result.home_action,question,requestId,body.session?.session_id,body.session?.message_id));
+      const answer=await startHome(hash,result.home_action,question,requestId,body.session?.session_id,body.session?.message_id);
+      return {reply:send(answer),forwarded:answer.startsWith('Передаю команду света')||answer.startsWith('Эта команда уже принята')};
     }
     if (result.google_route === true && !memoryCommand) {
-      const google = await handleGoogle({ owner: hash, personId, command, question, body, started, modelRoute: true });
-      if (google) return res.status(200).json(aliceReply(google.text));
+      let completion,forwardedJob;
+      const google = await handleGoogle({ owner: hash, personId, command, question, body, started, modelRoute: true, onWork:(p,id)=>{completion=p;forwardedJob=id;} });
+      if (google) return {reply:send(google.text),completion,forwardedJob,forwarded:/^(Проверяю Google\.|Этот запрос уже)/.test(google.text)};
     }
     if (result.web_route === true && !memoryCommand) {
       if (!searchConfigured()) return send('Поиск не настроен: на сервере нужен ключ Serper в ALICE_GPT_SEARCH.');
       const requestId = `${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:web:${question}`;
-      return send(await startJob(hash, question, requestId, body.session?.session_id, started, 'web'));
+      let completion,forwardedJob;
+      const answer=await startJob(hash, question, requestId, body.session?.session_id, started, 'web',(p,id)=>{completion=p;forwardedJob=id;});
+      return {reply:send(answer),completion,forwardedJob,forwarded:/^(Ищу в интернете\.|Этот запрос уже)/.test(answer)};
     }
 
     let answer = String(result.reply || "").slice(0, 1000);
@@ -529,7 +552,7 @@ ${memoryText}
       ]);
     }
 
-    await redis(commands, 700);
+    await redis(commands, 2500);
 
     // Не подтверждаем удаление, если Redis не изменился.
     if (/^(забудь|удали из памяти|исправь)/i.test(question) &&
@@ -545,6 +568,14 @@ ${memoryText}
     }
 
     return send(answer || "Готово.");
+    }
+
+    const work=processConversation().catch(error=>aliceReply(
+      ['TimeoutError','AbortError'].includes(error.name)
+        ? 'Сервис не ответил даже при фоновом ожидании. Запрос остановлен.'
+        : 'Не удалось обработать запрос или сохранить память. Изменение не подтверждено.'
+    ));
+    return res.status(200).json(await awaitConversation(hash,`${body.session?.session_id || ''}:${body.session?.message_id ?? ''}:${question}`,work,started));
 
   } catch (error) {
     console.error("Alice GPT: request_failed");
@@ -555,7 +586,7 @@ ${memoryText}
 
     return send(
       timeout
-        ? "Ответ занимает слишком много времени. Повтори вопрос."
+        ? "Не удалось подтвердить фоновую обработку: хранилище навыка сейчас не отвечает."
         : "Ошибка обработки запроса или сохранения памяти."
     );
   }
