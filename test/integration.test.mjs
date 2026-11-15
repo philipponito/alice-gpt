@@ -696,17 +696,49 @@ test('old bridges do not acquire light commands; listening bridges only refresh 
   assert.equal(ack.statusCode,204);
 });
 
-test('semantic router can request the allowlisted room light without claiming it is already on', async () => {
+test('semantic router handles a noncanonical light request without claiming it is already on', async () => {
   await homeHeartbeat(owner);
   provider=(url,opts)=>{
     assert.equal(url,'https://api.openai.com/v1/responses');
     assert.ok(JSON.parse(opts.body).text.format.schema.required.includes('home_action'));
     return response({output:[{content:[{type:'output_text',text:JSON.stringify({reply:'Включено',changes:[],google_route:false,web_route:false,home_action:{action:'on',target:'room_light'}})}]}]});
   };
-  const r=res();await alice(request('включи свет в комнате'),r);
+  const r=res();await alice(request('включи обычный свет в комнате'),r);
   assert.match(r.body.response.text,/Передаю команду/);
   assert.ok(!r.body.response.text.includes('Включено'));
   assert.equal((await nextHome(owner)).target,'room_light');
+});
+
+test('simple light commands bypass the model and use the configured default room', async () => {
+  await homeHeartbeat(owner);
+  const r=res();await alice(request('включи свет'),r);
+  assert.match(r.body.response.text,/Передаю команду/);
+  assert.equal((await nextHome(owner)).target,'room_light');
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('light location follow-up preserves the requested action without a model call', async () => {
+  await homeHeartbeat(owner);
+  let r=res();await alice(request('выключи лампу'),r);
+  assert.match(r.body.response.text,/в комнате или на кухне/);
+  const body=request('в комнате').body;body.session.message_id=2;
+  r=res();await alice(request('',{body}),r);
+  assert.match(r.body.response.text,/Передаю команду/);
+  const item=await nextHome(owner);
+  assert.equal(item.target,'room_light');assert.equal(item.action,'off');
+  assert.ok(!calls.some(c=>c.url.includes('openai.com')));
+});
+
+test('location follow-up is bound to the session and immediately following turn', async () => {
+  await homeHeartbeat(owner);
+  let r=res();await alice(request('включи лампу'),r);
+  provider=()=>routeReply(false,'Обычный разговор.');
+  const other=request('на кухне').body;other.session.session_id='other-session';other.session.message_id=2;
+  r=res();await alice(request('',{body:other}),r);
+  assert.equal(r.body.response.text,'Обычный разговор.');assert.equal(await nextHome(owner),null);
+  const late=request('в комнате').body;late.session.message_id=3;
+  r=res();await alice(request('',{body:late}),r);
+  assert.equal(r.body.response.text,'Обычный разговор.');assert.equal(await nextHome(owner),null);
 });
 
 test('Serper key stays in a fixed provider header; results are bounded and never fetched', async () => {
