@@ -227,7 +227,7 @@ test('explicit reminder request creates one event without a confirmation turn', 
   assert.match(r.body.response.text,/Напоминание создано/);
   assert.equal(writes,1);
 });
-test('calendar deletion requires a displayed proposal and is performed once', async () => {
+test('explicit calendar deletion executes once without an extra confirmation', async () => {
   await tokens(); let model=0, deletes=0;
   const event={id:'event1',etag:'"v1"',summary:'Встреча',organizer:{self:true},start:{dateTime:'2026-11-16T11:00:00+03:00'},end:{dateTime:'2026-11-16T12:00:00+03:00'}};
   provider=(url,opts)=>{
@@ -241,9 +241,7 @@ test('calendar deletion requires a displayed proposal and is performed once', as
     return response({items:[event]});
   };
   const first=res(); await alice(request('удали встречу завтра'),first);
-  assert.match(first.body.response.text,/подтверждаю/); assert.equal(deletes,0);
-  const confirm=res(); await alice(request('подтверждаю'),confirm);
-  assert.match(confirm.body.response.text,/удалено/); assert.equal(deletes,1);
+  assert.match(first.body.response.text,/удалено/); assert.equal(deletes,1);
   const repeat=res(); await alice(request('подтверждаю'),repeat); assert.equal(deletes,1);
 });
 test('follow-up time uses previous user intent but retrieves event afresh', async () => {
